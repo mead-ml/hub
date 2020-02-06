@@ -47,7 +47,7 @@
 - label: bert-base-uncased-pooled-pytorch
   type: bert-pooled
   model:
-    modules: [embed_bert_pytorch]
+    modules: [hub:v1:addons:embed_bert_pytorch]
     trainable: true
   file: bert-base-uncased
   dsz: 768
@@ -55,14 +55,14 @@
 - label: bert-base-uncased-pooled-tf
   type: bert-pooled
   model:
-    modules: [embed_bert_tf]
+    modules: [hub:v1:addons:embed_bert_tf]
     trainable: true
   file: bert_uncased_L-12_H-768_A-12/1
   dsz: 768
 - label: elmo-small-tf
   type: elmo-embed
   model:
-    modules: [embed_elmo_tf]
+    modules: [hub:v1:addons:embed_elmo_tf]
     options: {"lstm": {"use_skip_connections": true, "projection_dim": 128, "cell_clip": 3, "proj_clip": 3, "dim": 1024, "n_layers": 2}, "char_cnn": {"activation": "relu", "filters": [[1, 32], [2, 32], [3, 64], [4, 128], [5, 256], [6, 512], [7, 1024]], "n_highway": 1, "embedding": {"dim": 16}, "n_characters": 262, "max_characters_per_token": 50}}
     file: 
   dsz: 256

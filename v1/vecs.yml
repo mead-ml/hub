@@ -1,4 +1,27 @@
-- label: bert-base-uncased-tf
+- label: bert-base-uncased
   type: wordpiece1d
-  file: https://www.dropbox.com/s/0ddn79oytf95wvh/vocab.txt?dl=1
-  modules: [hub:v1:addons:vec_bert_tf]
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-uncased-vocab.txt
+  transform: baseline.lowercase
+
+- label: bert-large-uncased
+  type: wordpiece1d
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-uncased-vocab.txt
+  transform: baseline.lowercase
+
+- label: bert-base-cased
+  type: wordpiece1d
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-cased-vocab.txt
+
+- label: bert-large-cased
+  type: wordpiece1d
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-cased-vocab.txt
+
+- label: bert-base-multilingual-uncased
+  type: wordpiece1d
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual-uncased-vocab.txt
+  transform: baseline.lowercase
+
+- label: bert-base-multilingual-cased
+  type: wordpiece1d
+  vocab_file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual-cased-vocab.txt
+

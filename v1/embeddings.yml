@@ -49,7 +49,7 @@
   model:
     modules: [hub:v1:addons:embed_bert_pytorch]
     trainable: true
-  file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-uncased-pytorch_model.bin
+    file: https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-uncased.tar.gz
   dsz: 768
 
 - label: bert-base-uncased-pooled-tf

@@ -7,7 +7,7 @@ import six
 import numpy as np
 from baseline.embeddings import register_embeddings
 from baseline.pytorch.embeddings import PyTorchEmbeddings
-from baseline.vectorizers import register_vectorizer, AbstractVectorizer
+from baseline.vectorizers import register_vectorizer, AbstractVectorizer, load_bert_vocab
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from pytorch_pretrained_bert.modeling import BertModel
@@ -25,18 +25,11 @@ class BERTBaseEmbeddings(PyTorchEmbeddings):
 
     def __init__(self, name, **kwargs):
         super().__init__(name=name, **kwargs)
-        global BERT_TOKENIZER
         self.dsz = kwargs.get('dsz')
         handle = kwargs.get('embed_file')
-        if BERT_TOKENIZER is None:
-            if 'uncased' in handle or bool(kwargs.get('do_lower_case', False)) is False:
-                do_lower_case = False
-            else:
-                do_lower_case = True
-            BERT_TOKENIZER = BertTokenizer.from_pretrained(handle, do_lower_case=do_lower_case)
         self.model = BertModel.from_pretrained(kwargs.get('embed_file'))
-        self.vocab = BERT_TOKENIZER.vocab
-        self.vsz = len(BERT_TOKENIZER.vocab)  # 30522 self.model.embeddings.word_embeddings.num_embeddings
+        self.vocab = load_bert_vocab(None)
+        self.vsz = len(self.vocab)  # 30522 self.model.embeddings.word_embeddings.num_embeddings
 
     def get_vocab(self):
         return self.vocab
@@ -98,7 +91,7 @@ class BERTEmbeddings(BERTBaseEmbeddings):
 class BERTPooledEmbeddings(BERTBaseEmbeddings):
 
     def __init__(self, name, **kwargs):
-        super(BERTPooledEmbeddings, self).__init__(name=name, **kwargs)
+        super().__init__(name=name, **kwargs)
 
     def get_output(self, all_layers, pooled):
         return pooled

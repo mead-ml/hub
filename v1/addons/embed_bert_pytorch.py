@@ -18,16 +18,12 @@ import math
 import re
 
 
-BERT_TOKENIZER = None
-
-
 class BERTBaseEmbeddings(PyTorchEmbeddings):
 
     def __init__(self, name, **kwargs):
         super().__init__(name=name, **kwargs)
         self.dsz = kwargs.get('dsz')
-        handle = kwargs.get('embed_file')
-        self.model = BertModel.from_pretrained(kwargs.get('embed_file'))
+        self.model = BertModel.from_pretrained(kwargs.get('handle'))
         self.vocab = load_bert_vocab(None)
         self.vsz = len(self.vocab)  # 30522 self.model.embeddings.word_embeddings.num_embeddings
 

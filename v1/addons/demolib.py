@@ -1,5 +1,5 @@
 from baseline.embeddings import register_embeddings
-from baseline.tf.embeddings import TensorFlowEmbeddingsModel, TensorFlowEmbeddings, LookupTableEmbeddings
+from baseline.tf.embeddings import TensorFlowEmbeddingsMixin, TensorFlowEmbeddings, LookupTableEmbeddings
 from eight_mile.tf.layers import TRAIN_FLAG
 from baseline.reporting import register_reporting, ReportingHook
 from baseline.train import create_trainer, register_trainer, register_training_func, Trainer
@@ -44,11 +44,8 @@ class CharNBoWEmbeddings(TensorFlowEmbeddings):
 
 
 @register_embeddings(name='cbow')
-class CharConvEmbeddingsModel(TensorFlowEmbeddingsModel):
-    def __init__(self, name=None, **kwargs):
-        super().__init__(name, **kwargs)
-        self.embedding_layer = CharNBoWEmbeddings(name=self._name, **kwargs)
-
+class CharConvEmbeddingsModel(TensorFlowEmbeddingsMixin, CharNBoWEmbeddings):
+    
     @classmethod
     def create_placeholder(cls, name):
         return tf.compat.v1.placeholder(tf.int32, [None, None, None], name=name)

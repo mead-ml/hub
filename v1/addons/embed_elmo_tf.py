@@ -594,7 +594,7 @@ class BidirectionalLanguageModelGraph(object):
 
                     # activation
                     conv = activation(conv)
-                    conv = tf.squeeze(conv, squeeze_dims=[2])
+                    conv = tf.compat.v1.squeeze(conv, squeeze_dims=[2])
 
                     convolutions.append(conv)
 
@@ -921,7 +921,7 @@ def weight_layers(name, bilm_ops, l2_coef=None,
         if use_top_only:
             layers = tf.split(lm_embeddings, n_lm_layers, axis=1)
             # just the top layer
-            sum_pieces = tf.squeeze(layers[-1], squeeze_dims=1)
+            sum_pieces = tf.compat.v1.squeeze(layers[-1], squeeze_dims=1)
             # no regularization
             reg = 0.0
         else:
@@ -944,9 +944,9 @@ def weight_layers(name, bilm_ops, l2_coef=None,
             pieces = []
             for w, t in zip(normed_weights, layers):
                 if do_layer_norm:
-                    pieces.append(w * _do_ln(tf.squeeze(t, squeeze_dims=1)))
+                    pieces.append(w * _do_ln(tf.compat.v1.squeeze(t, squeeze_dims=1)))
                 else:
-                    pieces.append(w * tf.squeeze(t, squeeze_dims=1))
+                    pieces.append(w * tf.compat.v1.squeeze(t, squeeze_dims=1))
             sum_pieces = tf.add_n(pieces)
 
             # get the regularizer

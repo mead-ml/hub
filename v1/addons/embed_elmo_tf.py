@@ -554,7 +554,7 @@ class BidirectionalLanguageModelGraph(object):
 
         # the convolutions
         def make_convolutions(inp):
-            with tf.variable_scope('CNN') as scope:
+            with tf.compat.v1.variable_scope('CNN') as scope:
                 convolutions = []
                 for i, (width, num) in enumerate(filters):
                     if cnn_options['activation'] == 'relu':
@@ -615,7 +615,7 @@ class BidirectionalLanguageModelGraph(object):
         # set up weights for projection
         if use_proj:
             assert n_filters > projection_dim
-            with tf.variable_scope('CNN_proj') as scope:
+            with tf.compat.v1.variable_scope('CNN_proj') as scope:
                 W_proj_cnn = tf.compat.v1.get_variable(
                     "W_proj", [n_filters, projection_dim],
                     initializer=tf.random_normal_initializer(
@@ -636,7 +636,7 @@ class BidirectionalLanguageModelGraph(object):
             highway_dim = n_filters
 
             for i in range(n_highway):
-                with tf.variable_scope('CNN_high_%s' % i) as scope:
+                with tf.compat.v1.variable_scope('CNN_high_%s' % i) as scope:
                     W_carry = tf.compat.v1.get_variable(
                         'W_carry', [highway_dim, highway_dim],
                         # glorit init
@@ -769,7 +769,7 @@ class BidirectionalLanguageModelGraph(object):
                     i_direction = 1
                 variable_scope_name = 'RNN_{0}/RNN/MultiRNNCell/Cell{1}'.format(
                     i_direction, i)
-                with tf.variable_scope(variable_scope_name):
+                with tf.compat.v1.variable_scope(variable_scope_name):
                     layer_output, final_state = tf.nn.dynamic_rnn(
                         lstm_cell,
                         layer_input,
@@ -925,7 +925,7 @@ def weight_layers(name, bilm_ops, l2_coef=None,
             # no regularization
             reg = 0.0
         else:
-            W = tf.get_variable(
+            W = tf.compat.v1.get_variable(
                 '{}_ELMo_W'.format(name),
                 shape=(n_lm_layers, ),
                 initializer=tf.zeros_initializer,
@@ -959,7 +959,7 @@ def weight_layers(name, bilm_ops, l2_coef=None,
                 raise ValueError
 
         # scale the weighted sum by gamma
-        gamma = tf.get_variable(
+        gamma = tf.compat.v1.get_variable(
             '{}_ELMo_gamma'.format(name),
             shape=(1, ),
             initializer=tf.ones_initializer,

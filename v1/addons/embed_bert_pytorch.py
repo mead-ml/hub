@@ -65,7 +65,7 @@ class BERTEmbeddings(BERTBaseEmbeddings):
         super().__init__(name=name, **kwargs)
         self.layer_indices = kwargs.get('layers', [-1, -2, -3, -4])
         self.operator = kwargs.get('operator', 'concat')
-        self.finetune = kwargs.get('finetune', False)
+        self.finetune = kwargs.get('trainable', kwargs.get('finetune', False))
 
     def get_output(self, all_layers, pooled):
         if self.finetune:

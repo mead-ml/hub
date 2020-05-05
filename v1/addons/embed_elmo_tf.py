@@ -309,7 +309,7 @@ class BidirectionalLanguageModel(object):
                     use_character_inputs=self._use_character_inputs,
                     max_batch_size=self._max_batch_size)
             else:
-                with tf.variable_scope('', reuse=True):
+                with tf.compat.v1.variable_scope('', reuse=True):
                     lm_graph = BidirectionalLanguageModelGraph(
                         self._options,
                         self._weight_file,
@@ -486,7 +486,7 @@ class BidirectionalLanguageModelGraph(object):
         else:
             self._n_tokens_vocab = None
 
-        with tf.variable_scope('bilm', custom_getter=custom_getter):
+        with tf.compat.v1.variable_scope('bilm', custom_getter=custom_getter):
             self._build()
 
     def _build(self):
@@ -543,7 +543,7 @@ class BidirectionalLanguageModelGraph(object):
 
         # the character embeddings
         with tf.device("/cpu:0"):
-            self.embedding_weights = tf.get_variable(
+            self.embedding_weights = tf.compat.v1.get_variable(
                 "char_embed", [n_chars, char_embed_dim],
                 dtype=DTYPE,
                 initializer=tf.random_uniform_initializer(-1.0, 1.0)
@@ -574,12 +574,12 @@ class BidirectionalLanguageModelGraph(object):
                             mean=0.0,
                             stddev=np.sqrt(1.0 / (width * char_embed_dim))
                         )
-                    w = tf.get_variable(
+                    w = tf.compat.v1.get_variable(
                         "W_cnn_%s" % i,
                         [1, width, char_embed_dim, num],
                         initializer=w_init,
                         dtype=DTYPE)
-                    b = tf.get_variable(
+                    b = tf.compat.v1.get_variable(
                         "b_cnn_%s" % i, [num], dtype=DTYPE,
                         initializer=tf.constant_initializer(0.0))
 
@@ -616,12 +616,12 @@ class BidirectionalLanguageModelGraph(object):
         if use_proj:
             assert n_filters > projection_dim
             with tf.variable_scope('CNN_proj') as scope:
-                W_proj_cnn = tf.get_variable(
+                W_proj_cnn = tf.compat.v1.get_variable(
                     "W_proj", [n_filters, projection_dim],
                     initializer=tf.random_normal_initializer(
                         mean=0.0, stddev=np.sqrt(1.0 / n_filters)),
                     dtype=DTYPE)
-                b_proj_cnn = tf.get_variable(
+                b_proj_cnn = tf.compat.v1.get_variable(
                     "b_proj", [projection_dim],
                     initializer=tf.constant_initializer(0.0),
                     dtype=DTYPE)
@@ -637,22 +637,22 @@ class BidirectionalLanguageModelGraph(object):
 
             for i in range(n_highway):
                 with tf.variable_scope('CNN_high_%s' % i) as scope:
-                    W_carry = tf.get_variable(
+                    W_carry = tf.compat.v1.get_variable(
                         'W_carry', [highway_dim, highway_dim],
                         # glorit init
                         initializer=tf.random_normal_initializer(
                             mean=0.0, stddev=np.sqrt(1.0 / highway_dim)),
                         dtype=DTYPE)
-                    b_carry = tf.get_variable(
+                    b_carry = tf.compat.v1.get_variable(
                         'b_carry', [highway_dim],
                         initializer=tf.constant_initializer(-2.0),
                         dtype=DTYPE)
-                    W_transform = tf.get_variable(
+                    W_transform = tf.compat.v1.get_variable(
                         'W_transform', [highway_dim, highway_dim],
                         initializer=tf.random_normal_initializer(
                             mean=0.0, stddev=np.sqrt(1.0 / highway_dim)),
                         dtype=DTYPE)
-                    b_transform = tf.get_variable(
+                    b_transform = tf.compat.v1.get_variable(
                         'b_transform', [highway_dim],
                         initializer=tf.constant_initializer(0.0),
                         dtype=DTYPE)
@@ -678,7 +678,7 @@ class BidirectionalLanguageModelGraph(object):
 
         # the word embeddings
         with tf.device("/cpu:0"):
-            self.embedding_weights = tf.get_variable(
+            self.embedding_weights = tf.compat.v1.get_variable(
                 "embedding", [self._n_tokens_vocab, projection_dim],
                 dtype=DTYPE,
             )

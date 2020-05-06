@@ -981,7 +981,7 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         return tf.compat.v1.placeholder('int32', shape=(None, None, ELMO_MXWLEN), name=name)
 
     def __init__(self, name, embed_file=None, known_vocab=None, **kwargs):
-        super().__init__(trainable=True, name=name, dtype=tf.float32, **kwargs))
+        super().__init__(trainable=True, name=name, dtype=tf.float32, **kwargs)
         # options file
         self.weight_file = embed_file
         if 'options' not in kwargs:

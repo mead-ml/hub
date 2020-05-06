@@ -998,10 +998,6 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         self.vocab = UnicodeCharsVocabulary(known_vocab)
 
         assert self.dsz == 2*int(elmo_config['lstm']['projection_dim'])
-
-    def detached_ref(self):
-        # FIXME!
-        return self
         
     @property
     def vsz(self):
@@ -1034,6 +1030,13 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         config['known_vocab'] = self.known_vocab
         return config
 
+    # Shouldnt have to overload this, whats happening here?
+    def call(x):
+        if x is None:
+            x = self.create_placeholder(self.name)
+        self.x = x
+        return self.encode(x)
+    
 
 @register_embeddings(name='elmo')
 class ELMoHubEmbeddings(TensorFlowEmbeddings):

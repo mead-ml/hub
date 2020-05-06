@@ -1002,6 +1002,9 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
     def vsz(self):
         return self.vocab.size
 
+    def get_vsz(self):
+        return self.vocab.size
+
     def get_vocab(self):
         return self.vocab._word_to_id
 
@@ -1020,7 +1023,7 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         return elmo_weighting
 
     def get_config(self):
-        config = super(ELMoEmbeddings, self).get_config()
+        config = super().get_config()
         config['embed_file'] = self.weight_file
         config['known_vocab'] = self.known_vocab
         return config
@@ -1032,44 +1035,6 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         self.x = x
         return self.encode(x)
     
-
-@register_embeddings(name='elmo')
-class ELMoHubEmbeddings(TensorFlowEmbeddings):
-
-    @classmethod
-    def create_placeholder(cls, name):
-        return tf.compat.v1.placeholder(tf.string, [None, None], name=name)
-
-    def __init__(self, name, **kwargs):
-        super(ELMoHubEmbeddings, self).__init__(**kwargs)
-        self.vsz = None
-        self.dsz = kwargs.get('dsz')
-        self.finetune = kwargs.get('finetune', True)
-        self.name = name
-        self.cache_dir = kwargs.get('cache_dir')
-        if self.cache_dir is not None:
-            os.environ['TFHUB_CACHE_DIR'] = os.path.expanduser(self.cache_dir)
-        self.elmo = hub.Module("https://tfhub.dev/google/elmo/2", trainable=self.finetune)
-
-    def encode(self, x=None):
-        if x is None:
-            x = ELMoHubEmbeddings.create_placeholder(self.name)
-        self.x = x
-        empty_count = tf.reduce_sum(tf.cast(tf.equal(self.x, ''), tf.int32), axis=1)
-        T = tf.shape(self.x)[1]
-        lengths = T - empty_count
-        return self.elmo(
-            inputs={
-                'tokens': self.x,
-                'sequence_len': lengths,
-            },
-            signature="tokens", as_dict=True)['elmo']
-
-    def detached_ref(self):
-        return ELMoHubEmbeddings(
-            self.name, dsz=self.dsz, vsz=self.vsz, finetune=self.finetune, cache_dir=self.cache_dir
-        )
-
 
 @register_embeddings(name='elmo-pooled')
 class ELMoPooledEmbeddings(ELMoEmbeddings):

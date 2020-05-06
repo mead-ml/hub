@@ -3,7 +3,7 @@ import tensorflow as tf
 import tensorflow_hub as hub
 from baseline.utils import write_json, read_json, listify
 from baseline.embeddings import register_embeddings
-from baseline.tf.embeddings import TensorFlowEmbeddings
+from baseline.tf.embeddings import TensorFlowEmbeddings, TensorFlowEmbeddingsMixin
 from baseline.vectorizers import AbstractVectorizer, register_vectorizer, _token_iterator
 import numpy as np
 import tensorflow as tf
@@ -974,7 +974,7 @@ def weight_layers(name, bilm_ops, l2_coef=None,
 
 
 @register_embeddings(name='elmo-embed')
-class ELMoEmbeddings(TensorFlowEmbeddings):
+class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
 
     @classmethod
     def create_placeholder(cls, name):

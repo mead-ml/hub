@@ -1031,7 +1031,7 @@ class ELMoEmbeddings(TensorFlowEmbeddingsMixin, TensorFlowEmbeddings):
         return config
 
     # Shouldnt have to overload this, whats happening here?
-    def call(x):
+    def call(self, x):
         if x is None:
             x = self.create_placeholder(self.name)
         self.x = x

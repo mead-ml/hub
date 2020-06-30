@@ -7,17 +7,22 @@ from baseline.services import ClassifierService, ONNXClassifierService
 
 PERIOD_REGEX = re.compile(r"\.")
 QUOTE_REGEX = re.compile(r"^(?:'{1,2}|\")")
+DEFAULT_CONTEXT = 40
 
 
 class SentenceSegmenterService(ClassifierService):
+    def __init__(self, *args, context_size: int = DEFAULT_CONTEXT, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context_size = context_size
+
     def predict(self, tokens: str, boundy_candidate_regex: Pattern = PERIOD_REGEX, quote_regex: Pattern = QUOTE_REGEX) -> List[str]:
         possible_splits = list(boundy_candidate_regex.finditer(tokens))
         if not possible_splits:
             return [tokens]
         batch = []
         for split in possible_splits:
-            left_context = tokens[max(0, split.start() - 40): split.start()]
-            right_context = tokens[split.end():min(len(tokens), split.end() + 40)]
+            left_context = tokens[max(0, split.start() - self.context_size): split.start()]
+            right_context = tokens[split.end():min(len(tokens), split.end() + self.context_size)]
             example = list(chain(left_context.split(), ("<SEP>",), right_context.split()))
             batch.append(example)
         self.prepare_vectorizers(batch)
@@ -49,14 +54,18 @@ class SentenceSegmenterService(ClassifierService):
 
 
 class ONNXSentenceSegmenterService(ONNXClassifierService):
+    def __init__(self, *args, context_size: int = DEFAULT_CONTEXT, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context_size = context_size
+
     def predict(self, tokens: str, boundy_candidate_regex: Pattern = PERIOD_REGEX, quote_regex: Pattern = QUOTE_REGEX) -> List[str]:
         possible_splits = list(boundy_candidate_regex.finditer(tokens))
         if not possible_splits:
             return [tokens]
         batch = []
         for split in possible_splits:
-            left_context = tokens[max(0, split.start() - 40): split.start()]
-            right_context = tokens[split.end():min(len(tokens), split.end() + 40)]
+            left_context = tokens[max(0, split.start() - self.context_size): split.start()]
+            right_context = tokens[split.end():min(len(tokens), split.end() + self.context_size)]
             example = list(chain(left_context.split(), ("<SEP>",), right_context.split()))
             batch.append(example)
         self.prepare_vectorizers(batch)

@@ -24,7 +24,7 @@ class Turn2DVectorizer(AbstractVectorizer):
     def _next_element(self, turns, vocab):
 
         OOV = vocab['<UNK>']
-        EOT = vocab.get('<EOT>', vocab.get(' ', Offsets.PAD))
+        EOT = vocab.get('<EOU>', vocab.get(' ', Offsets.PAD))
 
         for turn in turns:
             for word in word_tokenize(turn['text']):
@@ -39,7 +39,7 @@ class Turn2DVectorizer(AbstractVectorizer):
             seen_turn += 1
             for word in turn:
                 counter[word] += 1
-            counter['<EOT>'] += 1
+            counter['<EOU>'] += 1
         self.max_seen_turns = max(self.max_seen_turns, seen_turn)
         return counter
 
@@ -56,7 +56,7 @@ class Turn2DVectorizer(AbstractVectorizer):
         if self.mxwlen < 0:
             self.mxwlen = self.max_seen_words
 
-        EOT = vocab.get('<EOT>', vocab.get(' ', Offsets.PAD))
+        EOT = vocab.get('<EOU>', vocab.get(' ', Offsets.PAD))
 
         vec2d = np.zeros((self.mxlen, self.mxwlen), dtype=int)
         i = 0

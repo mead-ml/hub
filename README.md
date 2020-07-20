@@ -18,42 +18,13 @@ This repository supports several types of MEAD-specific models including:
 Here is an example call to `mead-train` to fine-tune BERT for classification on SST2 using the HuggingFace libraries:
 
 ```
-mead-train --embeddings hub:v1:embeddings --config config/sst2-bert-base-uncased.yml --vecs hub:v1:vecs
+mead-train --embeddings hub:v1:embeddings --config config/sst2-bert-hf-base-uncased.json --vecs hub:v1:vecs
 ```
 
-The optional index arguments `--embeddings` and `--vecs` have been supplied here as shortname references to mead-hub.  This causes `mead-train` to download these indices and allows us to reference the labels from those indices (which are usually referencs to hub addons).  Here is what the mead config looks like in its entirety:
+The optional index arguments `--embeddings` and `--vecs` have been supplied here as shortname references to mead-hub.  This causes `mead-train` to download these indices and allows us to reference the labels from those indices (which are usually referencs to hub addons).  You can see the configuration file here: 
 
-```
-backend: pytorch
-basedir: ./bert-base-uncased-sst2
-batchsz: 12
-dataset: SST2
-modules:
-- embed_bert
-features:
-- embeddings:
-    label: bert-base-uncased-pytorch
-    type: bert-embed-pooled
-    finetune: true
-    dropout: 0.1
+https://github.com/dpressel/mead-baseline/blob/master/mead/config/sst2-bert-hf-base-uncased.json
 
-  name: bert
-  vectorizer:
-    label: bert-base-uncased
-loader:
-  reader_type: default
-model:
-  model_type: fine-tune
-task: classify
-train:
-  early_stopping_metric: acc
-  epochs: 5
-  eta: 4.0e-5
-  optim: adamw
-  weight_decay: 1.0e-3
-
-```
-
-The SST2 dataset is defined in the default datasets index (note that we didnt override that), but notice that the embeddings label (`bert-base-uncased-pytorch`) and the vectorizer label (`bert-base-uncased`) reference items in the mead hub embeddings and vecs indices.  That's it!  The hub indices are downloaded, and when referenced in the MEAD config, the appropriate addons are automatically downloaded to the mead-baseline cache!
+The SST2 dataset is defined in the default datasets index (note that we didnt override that), but notice that the embeddings label (`bert-base-uncased-pooled-pytorch`) and the vectorizer label (`bert-base-uncased`) reference items in the mead hub embeddings and vecs indices.  That's it!  The hub indices are downloaded, and when referenced in the MEAD config, the appropriate addons are automatically downloaded to the mead-baseline cache!
 
 

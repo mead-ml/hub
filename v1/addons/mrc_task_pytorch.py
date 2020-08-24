@@ -4,7 +4,6 @@ This includes some utilities for MRC problems, including an iterable PyTorch loa
 to fit in core memory.
 
 """
-PROGRESS_TYPE = 'tqdm'
 import numpy as np
 from eight_mile.utils import Offsets, Average, listify
 from eight_mile.pytorch.layers import WithDropout, Dense
@@ -596,7 +595,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         total_norm = 0
         null_thresh = kwargs.get('null_thresh', 0.5)
         steps = len(loader)
-        pg = create_progress_bar(steps, name=PROGRESS_TYPE)
+        pg = create_progress_bar(steps)
 
         exact_matches = Average('exact_match')
         precisions = Average('precision')
@@ -652,7 +651,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         self.model.train()
         reporting_fns = kwargs.get('reporting_fns', [])
         steps = len(loader)
-        pg = create_progress_bar(steps, name=PROGRESS_TYPE)
+        pg = create_progress_bar(steps)
         epoch_loss = 0
         epoch_div = 0
         for i, batch_dict in enumerate(pg(loader)):

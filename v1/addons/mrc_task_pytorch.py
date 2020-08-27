@@ -31,12 +31,34 @@ from typing import List
 from mead.tasks import Task, Backend, register_task
 from mead.utils import read_config_file_or_json, index_by_label, print_dataset_info
 from eight_mile.downloads import DataDownloader
+import math
 logger = logging.getLogger('baseline')
 
 
 def whitespace_tokenize(s):
     return s.split()
 
+def _compute_softmax(scores):
+    """Compute softmax probability over raw logits."""
+    if not scores:
+        return []
+
+    max_score = None
+    for score in scores:
+        if max_score is None or score > max_score:
+            max_score = score
+
+    exp_scores = []
+    total_sum = 0.0
+    for score in scores:
+        x = math.exp(score - max_score)
+        exp_scores.append(x)
+        total_sum += x
+
+    probs = []
+    for score in exp_scores:
+        probs.append(score / total_sum)
+    return probs
 
 class MRCExample:
     """Intermediate object that holds a single QA sample, this gets converted to features later
@@ -279,8 +301,7 @@ class MRCDatasetIterator(IterableDataset):
         #return self.vectorizer.tokenizer.convert_tokens_to_ids(tokens)
 
     def __iter__(self):
-
-        unique_id = 1000000000
+        unique_id = 0
         shuffle = np.random.permutation(np.arange(len(self)))
 
         for si in shuffle:
@@ -397,6 +418,8 @@ class MRCDatasetIterator(IterableDataset):
                     start_position = 0
                     end_position = 0
 
+                # Because we will form this on an epoch, the id of the feature according its epoch ordering is
+                # sufficient as a unique id.
                 feature = InputFeatures(
                     unique_id=unique_id,
                     example_index=example_index,
@@ -412,8 +435,9 @@ class MRCDatasetIterator(IterableDataset):
                     is_impossible=example.is_impossible)
 
                 # Run callback
-                yield feature
                 unique_id += 1
+                yield feature
+
 
 
 class Batcher(IterableDataset):
@@ -427,14 +451,18 @@ class Batcher(IterableDataset):
         return len(self.dataset)//self.batchsz
 
     def _batch(self, batch_list):
+        example_index = torch.tensor([f.example_index for f in batch_list])
         input_ids = torch.tensor([f.input_ids for f in batch_list])
+        unique_id = torch.tensor([f.unique_id for f in batch_list])
         segment_ids = torch.tensor([f.segment_ids for f in batch_list])
         start_pos = torch.tensor([f.start_position for f in batch_list])
         end_pos = torch.tensor([f.end_position for f in batch_list])
         tokens = []
         for f in batch_list:
             tokens.append(f.tokens)
-        return {self.feature_key: input_ids, 'token_type': segment_ids, 'start_pos': start_pos, 'end_pos': end_pos, 'tokens': tokens}
+        return {self.feature_key: input_ids, 'token_type': segment_ids,
+                'unique_id': unique_id,
+                'example_index': example_index, 'start_pos': start_pos, 'end_pos': end_pos, 'tokens': tokens}
 
     def __iter__(self):
 
@@ -589,11 +617,26 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
     def _get_batchsz(batch_dict):
         return len(batch_dict['tokens'])
 
+    @staticmethod
+    def _get_best_indices(logits, n_best_size):
+        """Get the n-best logits from a list."""
+        index_and_score = sorted(enumerate(logits), key=lambda x: x[1], reverse=True)
+
+        best_indexes = []
+        for i in range(len(index_and_score)):
+            if i >= n_best_size:
+                break
+            best_indexes.append(index_and_score[i][0])
+        return best_indexes
+
     def _test(self, loader, **kwargs):
+
+
+
         self.model.eval()
         total_loss = 0
         total_norm = 0
-        null_thresh = kwargs.get('null_thresh', 0.5)
+        null_score_diff_thresh = kwargs.get('null_score_diff_thresh', 0.0)
         steps = len(loader)
         pg = create_progress_bar(steps)
 
@@ -601,6 +644,9 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         precisions = Average('precision')
         recalls = Average('recall')
         f1s = Average('f1')
+        ## TODO: defaultdict
+        example_index_to_features = collections.defaultdict(list)
+
         for batch_dict in pg(loader):
             with torch.no_grad():
                 example = self._make_input(batch_dict)
@@ -611,28 +657,152 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                 batchsz = self._get_batchsz(example)
                 total_loss += loss.item() * batchsz
                 total_norm += batchsz
-                best_end = torch.argmax(end_pos_pred, -1)
-                for i in range(batchsz):
+                start_pos_pred = start_pos_pred.detach().cpu()
+                end_pos_pred = end_pos_pred.detach().cpu()
+                y_start_pos = y_start_pos.detach().cpu()
+                y_end_pos = y_end_pos.detach().cpu()
+
+                for i in range(len(example)):
                     tokens = example['tokens'][i]
-                    best_end_idx = best_end[i].item()
+                    unique_id = example['unique_id'][i].item()
+                    example_id = example['example_index'][i].item()
+
+                    # Gather all the results
+                    example_index_to_features[example_id].append({'unique_id': unique_id,
+                                                                  'tokens': tokens,
+                                                                  'start': start_pos_pred[i].tolist(),
+                                                                  'end': end_pos_pred[i].tolist(),
+                                                                  'gold_start': y_start_pos[i].tolist(),
+                                                                  'gold_end': y_end_pos[i].tolist()})
+        # For each example, we need to go through and update info
 
 
-                    best_start_idx = torch.argmax(start_pos_pred[i], -1).item()
-                    sum_preds = torch.sigmoid(start_pos_pred[i, best_start_idx]) + torch.sigmoid(end_pos_pred[i, best_end_idx])
-                    if sum_preds < null_thresh:
-                        pred_answer = ''
-                    elif best_start_idx > best_end_idx:
-                        pred_answer = ''
-                    else:
-                        pred_answer = ' '.join(tokens[best_start_idx:best_end_idx])
-                    real_answer = ' '.join(tokens[y_start_pos[i].item():y_end_pos[i].item()])
-                    exact_match = compute_exact(real_answer, pred_answer)
-                    exact_matches.update(exact_match)
-                    precision, recall, f1 = compute_f1(real_answer, pred_answer)
-                    precisions.update(precision)
-                    recalls.update(recall)
-                    f1s.update(f1)
+        all_ids = list(example_index_to_features.keys())
+        example_index_to_predictions = {}
+        N = 20
+        MAX_ANSWER_LENGTH = 30
+        for i, id in enumerate(all_ids):
+            features_for_example = example_index_to_features[id]
+            prelim_predictions = []
+            score_null = 1e8
+            null_start = 0
+            min_null_feature_index = 0
+            null_end = 0
+            ## Each softmax is the probability of each token, so when we sort it and maintain the indices we get what we need
+            for fi, feature in enumerate(features_for_example):
+                start_indices = self._get_best_indices(feature['start'], N)
+                end_indices = self._get_best_indices(feature['end'], N)
+                feature_null_score = feature['start'][0] + feature['end'][0]
+                if feature_null_score < score_null:
+                    score_null = feature_null_score
+                    null_start = feature['start'][0]
+                    null_end = feature['end'][0]
+                    min_null_feature_index = fi
+                for start_index in start_indices:
+                    for end_index in end_indices:
+                        if start_index >= len(feature['tokens']):
+                            continue
+                        if end_index >= len(feature['tokens']):
+                            continue
 
+                        ## TODO: When does this happen?
+                        #if start_index not in feature.token_to_orig_map:
+                        #    continue
+                        #if end_index not in feature.token_to_orig_map:
+                        #    continue
+                        ## TODO: When does this happen?
+                        #if not feature.token_is_max_context.get(start_index, False):
+                        #    continue
+                        if end_index < start_index:
+                            continue
+                        length = end_index - start_index + 1
+                        if length > MAX_ANSWER_LENGTH:
+                            continue
+                        prelim_predictions.append({
+                                'feature_index': fi,
+                                'start_index': start_index,
+                                'end_index': end_index,
+                                'start_logit': feature['start'][start_index],
+                                'end_logit': feature['end'][end_index]})
+
+                prelim_predictions.append({
+                                'feature_index': min_null_feature_index,
+                                'start_index':0,
+                                'end_index':0,
+                                'start_logit':null_start,
+                                'end_logit':null_end})
+
+            prelim_predictions = sorted(
+                prelim_predictions,
+                key=lambda x: (x['start_logit'] + x['end_logit']),
+                reverse=True)
+
+            seen_answers = set()
+            nbest = []
+            for prediction in prelim_predictions:
+                feature = features_for_example[prediction['feature_index']]
+                gold_text = feature['tokens'][feature['gold_start']:feature['gold_end']]
+                #print(gold_text)
+                if len(nbest) == N and len(seen_answers) > 1:
+                    break
+                if prediction['start_index'] > 0:
+                    feature_text_tok = feature['tokens'][prediction['start_index']:prediction['end_index']]
+                    feature_text_str = ' '.join(feature_text_tok)
+                    if feature_text_str not in seen_answers:
+                        nbest.append({'predict_text': feature_text_tok,
+                                      'start_logit': prediction['start_logit'],
+                                      'end_logit': prediction['end_logit'],
+                                      'gold_text': gold_text})
+                        seen_answers.add(feature_text_str)
+                else:
+                    seen_answers.add('')
+                    if len(nbest) < N:
+                        nbest.append({'predict_text': [], 'start_logit': null_start, 'end_logit': null_end, 'gold_text': gold_text})
+            if '' not in seen_answers:
+                logger.warning('We dont have any valid null guesses!')
+            if len(seen_answers) < 2 and '' in seen_answers:
+                logger.warning("We dont have any non-null guesses!")
+            #    nbest.append({'text': '', 'start_logit': null_start, 'end_logit': null_end})
+            #print('guesses', seen_answers)
+            total_scores = []
+            best_non_null_entry = None
+            for entry in nbest:
+                total_scores.append(entry['start_logit'] + entry['end_logit'])
+                if not best_non_null_entry:
+                    if entry['predict_text']:
+                        best_non_null_entry = entry
+
+            probs = _compute_softmax(total_scores)
+            for entry in nbest:
+                entry['probs'] = probs
+
+            example_index_to_predictions[id] = nbest
+            score_diff = score_null - best_non_null_entry['start_logit'] - best_non_null_entry['end_logit']
+            if score_diff > null_score_diff_thresh:
+                pred_answer = ''
+            else:
+                pred_answer = ' '.join(best_non_null_entry['predict_text'])
+                print('predicted', pred_answer)
+
+
+
+            real_answer = ' '.join(best_non_null_entry['gold_text'])
+            if real_answer:
+                print('actual   ', real_answer)
+            exact_match = compute_exact(real_answer, pred_answer)
+            exact_matches.update(exact_match)
+            precision, recall, f1 = compute_f1(real_answer, pred_answer)
+            precisions.update(precision)
+            recalls.update(recall)
+            f1s.update(f1)
+
+        # predict "" iff the null score - the score of best non-null > threshold
+
+        #scores_diff_json[example.qas_id] = score_diff
+        #if score_diff > FLAGS.null_score_diff_threshold:
+        #    all_predictions[example.qas_id] = ""
+        #else:
+        #    all_predictions[example.qas_id] = best_non_null_entry.text
 
         metrics = {}
         metrics['avg_loss'] = total_loss / float(total_norm)
@@ -644,7 +814,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
     def _make_input(self, batch_dict):
         ex = {}
         for k, v in batch_dict.items():
-            ex[k] = v.cuda() if k != 'tokens' else v
+            ex[k] = v.cuda() if k not in ['tokens', 'unique_id', 'example_index'] else v
         return ex
 
     def _train(self, loader, **kwargs):
@@ -655,8 +825,8 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         epoch_loss = 0
         epoch_div = 0
         for i, batch_dict in enumerate(pg(loader)):
-            if i == 15000:
-                break
+            #if i == 100000:
+            #    break
             self.optimizer.zero_grad()
             example = self._make_input(batch_dict)
             y_start_pos = example.pop('start_pos')

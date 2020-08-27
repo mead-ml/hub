@@ -249,7 +249,6 @@ class MRCDatasetIterator(IterableDataset):
 
     def _improve_answer_span(self, doc_tokens, input_start, input_end, orig_answer_text):
         """Returns tokenized answer spans that better match the annotated answer."""
-        tokenizer = self.vectorizer.tokenizer
         # The SQuAD annotations are character based. We first project them to
         # whitespace-tokenized words. But then after WordPiece tokenization, we can
         # often find a "better match". For example:
@@ -272,7 +271,6 @@ class MRCDatasetIterator(IterableDataset):
         # the word "Japanese". Since our WordPiece tokenizer does not split
         # "Japanese", we just use "Japanese" as the annotation. This is fairly rare
         # in SQuAD, but does happen.
-        #tok_answer_text = " ".join(tokenizer.tokenize(orig_answer_text))
         tok_answer_text = " ".join(list(self.vectorizer.iterable(whitespace_tokenize(orig_answer_text))))
 
         for new_start in range(input_start, input_end + 1):
@@ -293,12 +291,10 @@ class MRCDatasetIterator(IterableDataset):
         return False
 
     def tokenize(self, text):
-        #return self.vectorizer.tokenizer.tokenize(text)
         return list(self.vectorizer.iterable(whitespace_tokenize(text)))
 
     def convert_tokens_to_ids(self, tokens):
         return convert_tokens_to_ids(self.vectorizer.vocab, tokens)
-        #return self.vectorizer.tokenizer.convert_tokens_to_ids(tokens)
 
     def __iter__(self):
         unique_id = 0
@@ -473,7 +469,6 @@ class Batcher(IterableDataset):
             yield self._batch(step)
 
 
-
 @register_reader(task='mrc', name='default')
 class SQuADJsonReader:
 
@@ -629,21 +624,86 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             best_indexes.append(index_and_score[i][0])
         return best_indexes
 
+    def convert_prelim_preds_to_nbest(self, prelim_predictions, features_for_example, null_start, null_end, limit=20):
+        """The original predictions coming in are sorted, with scores, but need to be N-bests
+
+        BERT sample code both in official and HF repository allows adding multiple non-predictions, which can cause the
+        entire N-best list to not contain a span answer.  In the BERT code, they add a `nonce` example with some random
+        text in it, but it seems more sensible to take the highest ranking span answer and always add that instead.
+
+        We also keep track of the gold answer here for later use and return that
+
+        :param prelim_predictions: A list of preliminary predictions
+        :param features_for_example: An index of features for this single example
+        :param null_start: The null_start logit value
+        :param null_end: Null end logit value
+        :param limit: The N in nbest
+        :return: A list of N-bests {'predict_text:[], 'start_logit':x, 'end_logit':y}
+        """
+        seen_answers = set()
+        nbest = []
+        gold_text = None
+        for prediction in prelim_predictions:
+            feature = features_for_example[prediction['feature_index']]
+            gold_start = feature['gold_start']
+            gold_end = feature['gold_end']
+            # A couple of possibilities
+            # The gold text might not be reachable in the answer, in which case the sample will be showing the zero sample
+            # The gold start might be set already in which case we dont replace
+            # We dont want to find out that the answer changed though, that should be an error
+
+            # If the its pointing at token 0, thats not an answer, since that contains a special token
+            if gold_start == 0 and gold_end == 0:
+                check_gold = []
+            else:
+                check_gold = feature['tokens'][gold_start:gold_end+1]
+
+            # If gold is already set and check gold is not empty, and they dont match, we have a problem
+            if gold_text and check_gold and gold_text != check_gold:
+                raise Exception(f"The answer changed from [{gold_text}] to [{check_gold}]")
+
+            # Only set gold if we didnt have it before
+            if not gold_text:
+                gold_text = check_gold
+
+            # This test makes sure that we have hit the limit of nbest and that there are at least 2 types of answers
+            # Usually this is '' and some other answer
+            if len(nbest) == limit and len(seen_answers) > 1:
+                break
+            if prediction['start_index'] > 0:
+                feature_text_tok = feature['tokens'][prediction['start_index']:prediction['end_index'] + 1]
+                feature_text_str = ' '.join(feature_text_tok)
+                if feature_text_str not in seen_answers:
+                    nbest.append({'predict_text': feature_text_tok,
+                                  'start_logit': prediction['start_logit'],
+                                  'end_logit': prediction['end_logit']})
+                    seen_answers.add(feature_text_str)
+            else:
+                seen_answers.add('')
+                if len(nbest) < limit:
+                    nbest.append(
+                        {'predict_text': [], 'start_logit': null_start, 'end_logit': null_end})
+        if '' not in seen_answers:
+            nbest.append({'predict_text': [], 'start_logit': null_start, 'end_logit': null_end})
+        # This shouldnt happen anymore because we fixed the BERT logic above by adding the highest non-null score
+        if len(seen_answers) < 2 and '' in seen_answers:
+            raise Exception("We dont have any non-null guesses!")
+        return nbest, gold_text
+
     def _test(self, loader, **kwargs):
-
-
 
         self.model.eval()
         total_loss = 0
         total_norm = 0
-        null_score_diff_thresh = kwargs.get('null_score_diff_thresh', 0.0)
+        null_score_diff_threshes = kwargs.get('null_score_diff_threshes', np.arange(-5, 1))
         steps = len(loader)
         pg = create_progress_bar(steps)
-
-        exact_matches = Average('exact_match')
-        precisions = Average('precision')
-        recalls = Average('recall')
-        f1s = Average('f1')
+        limit_nbest = kwargs.get('limit_nbest', 20)
+        limit_answer_length = kwargs.get('limit_answer_length', 30)
+        exact_matches = {thresh: Average(f'exact_match@{thresh}') for thresh in null_score_diff_threshes}
+        precisions = {thresh: Average(f'precision@{thresh}') for thresh in null_score_diff_threshes}
+        recalls = {thresh: Average(f'recall@{thresh}') for thresh in null_score_diff_threshes}
+        f1s = {thresh: Average(f'f1@{thresh}') for thresh in null_score_diff_threshes}
         ## TODO: defaultdict
         example_index_to_features = collections.defaultdict(list)
 
@@ -679,8 +739,6 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
 
         all_ids = list(example_index_to_features.keys())
         example_index_to_predictions = {}
-        N = 20
-        MAX_ANSWER_LENGTH = 30
         for i, id in enumerate(all_ids):
             features_for_example = example_index_to_features[id]
             prelim_predictions = []
@@ -690,8 +748,8 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             null_end = 0
             ## Each softmax is the probability of each token, so when we sort it and maintain the indices we get what we need
             for fi, feature in enumerate(features_for_example):
-                start_indices = self._get_best_indices(feature['start'], N)
-                end_indices = self._get_best_indices(feature['end'], N)
+                start_indices = self._get_best_indices(feature['start'], limit_nbest)
+                end_indices = self._get_best_indices(feature['end'], limit_nbest)
                 feature_null_score = feature['start'][0] + feature['end'][0]
                 if feature_null_score < score_null:
                     score_null = feature_null_score
@@ -716,7 +774,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                         if end_index < start_index:
                             continue
                         length = end_index - start_index + 1
-                        if length > MAX_ANSWER_LENGTH:
+                        if length > limit_answer_length:
                             continue
                         prelim_predictions.append({
                                 'feature_index': fi,
@@ -737,33 +795,9 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                 key=lambda x: (x['start_logit'] + x['end_logit']),
                 reverse=True)
 
-            seen_answers = set()
-            nbest = []
-            for prediction in prelim_predictions:
-                feature = features_for_example[prediction['feature_index']]
-                gold_text = feature['tokens'][feature['gold_start']:feature['gold_end']]
-                #print(gold_text)
-                if len(nbest) == N and len(seen_answers) > 1:
-                    break
-                if prediction['start_index'] > 0:
-                    feature_text_tok = feature['tokens'][prediction['start_index']:prediction['end_index']]
-                    feature_text_str = ' '.join(feature_text_tok)
-                    if feature_text_str not in seen_answers:
-                        nbest.append({'predict_text': feature_text_tok,
-                                      'start_logit': prediction['start_logit'],
-                                      'end_logit': prediction['end_logit'],
-                                      'gold_text': gold_text})
-                        seen_answers.add(feature_text_str)
-                else:
-                    seen_answers.add('')
-                    if len(nbest) < N:
-                        nbest.append({'predict_text': [], 'start_logit': null_start, 'end_logit': null_end, 'gold_text': gold_text})
-            if '' not in seen_answers:
-                logger.warning('We dont have any valid null guesses!')
-            if len(seen_answers) < 2 and '' in seen_answers:
-                logger.warning("We dont have any non-null guesses!")
-            #    nbest.append({'text': '', 'start_logit': null_start, 'end_logit': null_end})
-            #print('guesses', seen_answers)
+            nbest, gold_text = self.convert_prelim_preds_to_nbest(prelim_predictions, features_for_example, null_start, null_end, limit_nbest)
+
+            # This is the BERT routine for figuring out the null values, if you have a different model this might change
             total_scores = []
             best_non_null_entry = None
             for entry in nbest:
@@ -778,55 +812,68 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
 
             example_index_to_predictions[id] = nbest
             score_diff = score_null - best_non_null_entry['start_logit'] - best_non_null_entry['end_logit']
-            if score_diff > null_score_diff_thresh:
-                pred_answer = ''
-            else:
-                pred_answer = ' '.join(best_non_null_entry['predict_text'])
-                print('predicted', pred_answer)
 
+            # The BERT codebase suggests tuning the threshold here between -1 and -5 based on the dev data.
+            # Here we will run it over all integers in that range to find a suitable value
+            for null_score_diff_thresh in null_score_diff_threshes:
+                # This answer is not suitable for SQuaD evalution, because it only contains the tokenized data
+                # There is a more complex way of handling the final results when creating a SQuaD result since it
+                # needs to be able to get back to the SQuaD tokenized answer.  However, for just calculating the
+                # metrics while doing evaluation, we dont really care about this.  This could emit a metric score that
+                # is slightly different from the score we would get if submitting to SQuaD but it should be close enough
+                # for things like early stopping
+                if score_diff > null_score_diff_thresh:
+                    pred_answer = ''
+                else:
+                    pred_answer = ' '.join(best_non_null_entry['predict_text'])
+                    #print('predicted', pred_answer)
 
+                real_answer = ' '.join(gold_text)
+                #if real_answer:
+                #    print('actual   ', real_answer)
 
-            real_answer = ' '.join(best_non_null_entry['gold_text'])
-            if real_answer:
-                print('actual   ', real_answer)
-            exact_match = compute_exact(real_answer, pred_answer)
-            exact_matches.update(exact_match)
-            precision, recall, f1 = compute_f1(real_answer, pred_answer)
-            precisions.update(precision)
-            recalls.update(recall)
-            f1s.update(f1)
-
-        # predict "" iff the null score - the score of best non-null > threshold
-
-        #scores_diff_json[example.qas_id] = score_diff
-        #if score_diff > FLAGS.null_score_diff_threshold:
-        #    all_predictions[example.qas_id] = ""
-        #else:
-        #    all_predictions[example.qas_id] = best_non_null_entry.text
+                exact_match = compute_exact(real_answer, pred_answer)
+                exact_matches[null_score_diff_thresh].update(exact_match)
+                precision, recall, f1 = compute_f1(real_answer, pred_answer)
+                precisions[null_score_diff_thresh].update(precision)
+                recalls[null_score_diff_thresh].update(recall)
+                f1s[null_score_diff_thresh].update(f1)
 
         metrics = {}
         metrics['avg_loss'] = total_loss / float(total_norm)
-        metrics['precision'] = precisions.avg
-        metrics['recall'] = recalls.avg
-        metrics['f1'] = f1s.avg
+
+        metrics.update({m.name: m.avg for m in precisions.values()})
+        metrics.update({m.name: m.avg for m in recalls.values()})
+        metrics.update({m.name: m.avg for m in f1s.values()})
+        metrics.update({m.name: m.avg for m in exact_matches.values()})
+
+        # Shouldnt really do early stopping I guess since it could be related to thresholding, but allow for now
+        metrics['precision'] = max(m.avg for m in precisions.values())
+        metrics['recall'] = max(m.avg for m in recalls.values())
+        metrics['f1'] = max(m.avg for m in f1s.values())
+        metrics['exact_match'] = max(m.avg for m in exact_matches.values())
+
+        #metrics['exact_match'] = exact_matches.avg
         return metrics
 
     def _make_input(self, batch_dict):
         ex = {}
         for k, v in batch_dict.items():
+            # TODO: clean this up!
             ex[k] = v.cuda() if k not in ['tokens', 'unique_id', 'example_index'] else v
         return ex
 
     def _train(self, loader, **kwargs):
         self.model.train()
         reporting_fns = kwargs.get('reporting_fns', [])
+        limit_samples = kwargs.get('limit_samples', None)
         steps = len(loader)
         pg = create_progress_bar(steps)
         epoch_loss = 0
         epoch_div = 0
         for i, batch_dict in enumerate(pg(loader)):
-            #if i == 100000:
-            #    break
+            if limit_samples and i > limit_samples:
+                break
             self.optimizer.zero_grad()
             example = self._make_input(batch_dict)
             y_start_pos = example.pop('start_pos')
@@ -902,15 +949,14 @@ def fit(model_params, ts, vs, es, **kwargs):
         patience = kwargs.get('patience', epochs)
         logger.info('Doing early stopping on [%s] with patience [%d]', early_stopping_metric, patience)
 
-    reporting_fns = listify(kwargs.get('reporting', []))
-    logger.info('reporting %s', reporting_fns)
+    reporting_fns = listify(kwargs.pop('reporting', []))
     trainer = create_trainer(model_params, **kwargs)
 
     last_improved = 0
 
     for epoch in range(epochs):
-        trainer.train(ts, reporting_fns)
-        test_metrics = trainer.test(vs, reporting_fns)
+        trainer.train(ts, reporting_fns, **kwargs)
+        test_metrics = trainer.test(vs, reporting_fns, **kwargs)
 
         if do_early_stopping is False:
             trainer.save(model_file)
@@ -934,8 +980,6 @@ def fit(model_params, ts, vs, es, **kwargs):
         trainer = create_trainer(model, **kwargs)
         test_metrics = trainer.test(es, reporting_fns, phase='Test', verbose=verbose, output=output, txts=txts)
     return test_metrics
-
-
 
 
 @register_task
@@ -998,7 +1042,6 @@ class MRCTask(Task):
         if self.backend.params is not None:
             for k, v in self.backend.params.items():
                 model[k] = v
-        ##return baseline.model.create_model(self.embeddings, self.labels, **model)
 
     def _load_dataset(self):
         read = self.config_params['reader'] if 'reader' in self.config_params else self.config_params['loader']

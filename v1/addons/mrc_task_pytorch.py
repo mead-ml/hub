@@ -38,6 +38,10 @@ logger = logging.getLogger('baseline')
 def whitespace_tokenize(s):
     return s.split()
 
+def is_whitespace(c):
+    if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
+        return True
+    return False
 def _compute_softmax(scores):
     """Compute softmax probability over raw logits."""
     if not scores:
@@ -167,6 +171,15 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 
 def read_examples(input_file, is_training):
+    """Read SQuaD style formatted examples, both v1.1 and v2
+
+    For v1.1, the is_impossible field is absent, so default that to False here to support both.
+
+
+    :param input_file:
+    :param is_training:
+    :return:
+    """
     examples = []
     with open(input_file, "r") as f:
         input_data = json.load(f)['data']
@@ -178,7 +191,7 @@ def read_examples(input_file, is_training):
                 char_to_word_offset = []
                 prev_is_whitespace = True
                 for c in context_item:
-                    if MRCDatasetIterator.is_whitespace(c):
+                    if is_whitespace(c):
                         prev_is_whitespace = True
                     else:
                         if prev_is_whitespace:
@@ -197,18 +210,21 @@ def read_examples(input_file, is_training):
                     if is_training:
 
                         is_impossible = bool(qa.get('is_impossible', False))
-                        ## Need a solution here
-                        ##if (len(qa["answers"]) != 1) and (not is_impossible):
-                        ##    raise ValueError(
-                        ##        "For training, each question should have exactly 1 answer."
-                        ##    )
+                        # The dev set has more than one example possibly
+                        s = set([json.dumps(q) for q in qa["answers"]])
+                        # The BERT code raises an error, which makes sense when eval is offline
+                        ## if (len(s) != 1) and (not is_impossible):
+                        ##    logger.warning('Multiple answers [%s]', ','.join(q['text'] for q in qa['answers']))
                         if not is_impossible:
-                            answer = qa['answers'][0]
-                            orig_answer_text = answer['text']
-                            answer_offset = answer['answer_start']
+                            first_answer = qa['answers'][0]
+                            # For training we have a single answer, for dev the scoring takes into  account all answers
+                            # so in order to do this the way we want with inline eval we need to handle this, right now
+                            # our scores are too low because we only use the first
+                            orig_answer_text = first_answer['text']
+                            first_answer_offset = first_answer['answer_start']
                             answer_length = len(orig_answer_text)
-                            start_position = char_to_word_offset[answer_offset]
-                            end_position = char_to_word_offset[answer_offset + answer_length - 1]
+                            start_position = char_to_word_offset[first_answer_offset]
+                            end_position = char_to_word_offset[first_answer_offset + answer_length - 1]
                             actual_text = ' '.join(
                                 doc_tokens[start_position:(end_position + 1)]
 
@@ -218,6 +234,7 @@ def read_examples(input_file, is_training):
                             if actual_text.find(cleaned_answer_text) == -1:
                                 logger.warning("Could not find answer: '%s' vs. '%s'", actual_text, cleaned_answer_text)
                                 continue
+                        # This should only happen outside of mead-train for offline evaluation
                         else:
                             start_position = -1
                             end_position = -1
@@ -236,7 +253,8 @@ def read_examples(input_file, is_training):
 
 class MRCDatasetIterator(IterableDataset):
 
-    def __init__(self, input_file, vectorizer, mxlen=384, has_impossible=True, is_training=True, doc_stride=128, mxqlen=64):
+    def __init__(self, input_file, vectorizer, mxlen=384, has_impossible=True, is_training=True, doc_stride=128, mxqlen=64,
+                 shuffle=True):
         super().__init__()
         self.vectorizer = vectorizer
         self.input_file = input_file
@@ -246,6 +264,7 @@ class MRCDatasetIterator(IterableDataset):
         self.has_impossible = has_impossible
         self.is_training = is_training
         self.examples = read_examples(input_file, is_training)
+        self.shuffle = shuffle
 
     def _improve_answer_span(self, doc_tokens, input_start, input_end, orig_answer_text):
         """Returns tokenized answer spans that better match the annotated answer."""
@@ -282,28 +301,40 @@ class MRCDatasetIterator(IterableDataset):
         return input_start, input_end
 
     def __len__(self):
+        """TODO: Not correct the actual number of training/dev samples is going to be greater than this
+
+
+        :return:
+        """
         return len(self.examples)
 
-    @staticmethod
-    def is_whitespace(c):
-        if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
-            return True
-        return False
-
     def tokenize(self, text):
+        """Encapsulate vectorizer tokenization interface
+
+        :param text:
+        :return:
+        """
         return list(self.vectorizer.iterable(whitespace_tokenize(text)))
 
     def convert_tokens_to_ids(self, tokens):
+        """Encapsulate vectorizer interface
+
+        :param tokens:
+        :return:
+        """
         return convert_tokens_to_ids(self.vectorizer.vocab, tokens)
 
     def __iter__(self):
         unique_id = 0
         # The len(self) is not correct if used in context of features, but it is correct WRT number of docs (examples)
         # Using it in this manner below to shuffle the examples is proper usage
-        shuffle = np.random.permutation(np.arange(len(self)))
-
-        for si in shuffle:
-            example_index = shuffle[si]
+        order = np.arange(len(self))
+        if self.shuffle:
+            order = np.random.permutation(order)
+        # [3, 6, 22, 8, 9]
+        for example_index in order:
+            # The
+            #example_index = si  #order[si]
             example = self.examples[example_index]
             query_tokens = self.tokenize(example.query_item)
 
@@ -354,16 +385,18 @@ class MRCDatasetIterator(IterableDataset):
                     break
                 start_offset += min(length, self.doc_stride)
 
-            for (doc_span_index, doc_span) in enumerate(doc_spans):
+            for doc_span_index, doc_span in enumerate(doc_spans):
                 tokens = []
                 token_to_orig_map = {}
                 token_is_max_context = {}
                 segment_ids = []
+                # FIXME! Dont use a literal here, read from config
                 tokens.append("[CLS]")
                 segment_ids.append(0)
                 for token in query_tokens:
                     tokens.append(token)
                     segment_ids.append(0)
+                # FIXME! Dont use a literal here, read from config
                 tokens.append("[SEP]")
                 segment_ids.append(0)
 
@@ -410,12 +443,13 @@ class MRCDatasetIterator(IterableDataset):
                         start_position = tok_start_position - doc_start + doc_offset
                         end_position = tok_end_position - doc_start + doc_offset
 
-                if example.is_impossible:
+                if self.is_training and example.is_impossible:
                     start_position = 0
                     end_position = 0
 
                 # Because we will form this on an epoch, the id of the feature according its epoch ordering is
                 # sufficient as a unique id.
+                assert(unique_id != None)
                 feature = InputFeatures(
                     unique_id=unique_id,
                     example_index=example_index,
@@ -459,8 +493,6 @@ class Batcher(IterableDataset):
         token_is_max_context = [f.token_is_max_context for f in batch_list]
         token_to_orig_map = [f.token_to_orig_map for f in batch_list]
         tokens = [f.tokens for f in batch_list]
-        #for f in batch_list:
-        #    tokens.append(f.tokens)
         return {self.feature_key: input_ids, 'token_type': segment_ids,
                 'unique_id': unique_id,
                 'token_is_max_context': token_is_max_context,
@@ -520,17 +552,25 @@ class SQuADJsonReader:
             labels[index] = label
         return labels
 
-    def load(self, filename, vocabs, batchsz, **kwargs):
+    def load(self, filename, _, batchsz, **kwargs):
+        """The load function normally takes in a vocab for the 3rd argument, but we are always going to assume predefined vocabs
 
-        #shuffle = kwargs.get('shuffle', False)
+        :param filename:
+        :param _:
+        :param batchsz:
+        :param kwargs:
+        :return:
+        """
+        shuffle = kwargs.get('shuffle', False)
         doc_stride = int(kwargs.get('doc_stride', 128))
         mxqlen = int(kwargs.get('mxqlen', 64))
         has_impossible = bool(kwargs.get('has_impossible', True))
-        # I think for both training and dev in MEAD execution we need this to be true
-        is_training = bool(kwargs.get('is_training', True))
+        # Whenever we run in mead-train we want this to be on, because, unlike the BERT code, we do inline evaluation
+        # and so we need ground truth
+        is_training = kwargs.get('is_training', True)
 
-        loader = MRCDatasetIterator(filename, self.vectorizer, mxlen=384, doc_stride=doc_stride,
-                                    has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen)
+        loader = MRCDatasetIterator(filename, self.vectorizer, mxlen=self.vectorizer.mxlen, doc_stride=doc_stride,
+                                    has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen, shuffle=shuffle)
 
         return Batcher(loader, batchsz)
 
@@ -727,15 +767,15 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                     length = end_index - start_index + 1
                     if length > limit_answer_length:
                         continue
-                    if start_index not in feature['token_to_orig_map']:
-                        #logger.warning("Start is not in orig mapping")
-                        continue
-                    if end_index not in feature['token_to_orig_map']:
-                        #logger.warning("End is not in orig mapping")
-                        continue
-                    if not feature['token_is_max_context'].get(start_index, False):
-                        #logger.warning("Toke isnt max context. Skipping")
-                        continue
+                    #if start_index not in feature['token_to_orig_map']:
+                    #    #logger.warning("Start is not in orig mapping")
+                    #    continue
+                    #if end_index not in feature['token_to_orig_map']:
+                    #    #logger.warning("End is not in orig mapping")
+                    #    continue
+                    #if not feature['token_is_max_context'].get(start_index, False):
+                    #    #logger.warning("Toke isnt max context. Skipping")
+                    #    continue
                     prelim_predictions.append({
                         'feature_index': fi,
                         'start_index': start_index,

@@ -307,8 +307,12 @@ class MRCDatasetIterator(IterableDataset):
 
         return input_start, input_end
 
-    def __len__(self):
-        """TODO: Not correct the actual number of training/dev samples is going to be greater than this
+    @property
+    def num_examples(self):
+        """Note that the number of examples is *not* the same as the number of samples for training
+
+        The examples can be any length, the samples are typically 384 with a stride of 128, so if you have long
+        examples they will almost definitely be cut up into multiple samples.
 
 
         :return:
@@ -335,13 +339,11 @@ class MRCDatasetIterator(IterableDataset):
         unique_id = 0
         # The len(self) is not correct if used in context of features, but it is correct WRT number of docs (examples)
         # Using it in this manner below to shuffle the examples is proper usage
-        order = np.arange(len(self))
+        order = np.arange(self.num_examples)
         if self.shuffle:
             order = np.random.permutation(order)
         # [3, 6, 22, 8, 9]
         for example_index in order:
-            # The
-            #example_index = si  #order[si]
             example = self.examples[example_index]
             query_tokens = self.tokenize(example.query_item)
 
@@ -476,24 +478,13 @@ class MRCDatasetIterator(IterableDataset):
                 yield feature
 
 
-class Batcher(IterableDataset):
-    """Batching IterableDataset: doesnt require a length and can be used for very large datasets that dont fit in RAM
+def create_collate_on(field='word'):
+    """Closure for creating a collate function for use with the DataLoader using some feature name
 
-    This dataset wraps an internal dataset and batches its elements on demand
+    :param field:
+    :return:
     """
-    def __init__(self, dataset, batchsz, feature_key='word'):
-        self.batchsz = batchsz
-        self.dataset = dataset
-        self.feature_key = feature_key
-
-    def __len__(self):
-        return len(self.dataset)//self.batchsz
-
-    @property
-    def examples(self):
-        return self.dataset.examples
-
-    def _batch(self, batch_list):
+    def collate_fn(batch_list):
         example_index = torch.tensor([f.example_index for f in batch_list])
         input_ids = torch.tensor([f.input_ids for f in batch_list])
         unique_id = torch.tensor([f.unique_id for f in batch_list])
@@ -503,23 +494,12 @@ class Batcher(IterableDataset):
         token_is_max_context = [f.token_is_max_context for f in batch_list]
         token_to_orig_map = [f.token_to_orig_map for f in batch_list]
         tokens = [f.tokens for f in batch_list]
-        return {self.feature_key: input_ids, 'token_type': segment_ids,
+        return {field: input_ids, 'token_type': segment_ids,
                 'unique_id': unique_id,
                 'token_is_max_context': token_is_max_context,
                 'token_to_orig_map': token_to_orig_map,
                 'example_index': example_index, 'start_pos': start_pos, 'end_pos': end_pos, 'tokens': tokens}
-
-    def __iter__(self):
-
-        dataset_iter = iter(self.dataset)
-        # FIXME: This is incorrect usage of the underlying dataset length, which maps to full docs, not samples to train
-        # The side-effect of doing this is that we will only process the example count per epoch, so either we need to
-        # fix here, or run for more epochs.  That should be all right since the examples are continuously shuffled, but
-        # its not exactly truthful for training, and allows inaccurate metrics at test time -- it wont use all samples
-        steps_per_epoch = len(self.dataset)//self.batchsz
-        for indices in range(steps_per_epoch):
-            step = [next(dataset_iter) for _ in range(self.batchsz)]
-            yield self._batch(step)
+    return collate_fn
 
 
 @register_reader(task='mrc', name='default')
@@ -579,10 +559,12 @@ class SQuADJsonReader:
         # and so we need ground truth
         is_training = kwargs.get('is_training', True)
 
-        loader = MRCDatasetIterator(filename, self.vectorizer, mxlen=self.vectorizer.mxlen, doc_stride=doc_stride,
-                                    has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen, shuffle=shuffle)
+        ds = MRCDatasetIterator(filename, self.vectorizer, mxlen=self.vectorizer.mxlen, doc_stride=doc_stride,
+                                has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen, shuffle=shuffle)
 
-        return Batcher(loader, batchsz)
+        dl = DataLoader(ds, batch_size=batchsz, pin_memory=True, collate_fn=create_collate_on())
+        return dl
+        #return Batcher(loader, batchsz)
 
 
 def normalize_answer(s: str) -> str:
@@ -784,15 +766,15 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                     length = end_index - start_index + 1
                     if length > limit_answer_length:
                         continue
-                    #if start_index not in feature['token_to_orig_map']:
+                    if start_index not in feature['token_to_orig_map']:
                     #    logger.warning("Start is not in orig mapping")
-                    #    continue
-                    #if end_index not in feature['token_to_orig_map']:
+                        continue
+                    if end_index not in feature['token_to_orig_map']:
                     #    logger.warning("End is not in orig mapping")
-                    #    continue
-                    #if not feature['token_is_max_context'].get(start_index, False):
+                        continue
+                    if not feature['token_is_max_context'].get(start_index, False):
                     #    logger.warning("Token isnt max context. Skipping")
-                    #    continue
+                        continue
                     prelim_predictions.append({
                         'feature_index': fi,
                         'start_index': start_index,
@@ -907,11 +889,8 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         """
         total_loss = 0
         total_norm = 0
-        # TODO: This is not currently correct, since the length yield the number of examples
-        steps = len(loader)
-        pg = create_progress_bar(steps)
         example_index_to_features = collections.defaultdict(list)
-        for batch_dict in pg(loader):
+        for batch_dict in loader:
             with torch.no_grad():
                 example = self._make_input(batch_dict)
                 y_start_pos = example.pop('start_pos')
@@ -926,7 +905,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                 y_start_pos = y_start_pos.detach().cpu()
                 y_end_pos = y_end_pos.detach().cpu()
 
-                for i in range(len(example)):
+                for i in range(batchsz):
                     tokens = example['tokens'][i]
                     unique_id = example['unique_id'][i].item()
                     example_id = example['example_index'][i].item()
@@ -956,11 +935,9 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         self.model.train()
         reporting_fns = kwargs.get('reporting_fns', [])
         limit_samples = kwargs.get('limit_samples', None)
-        steps = len(loader)
-        pg = create_progress_bar(steps)
         epoch_loss = 0
         epoch_div = 0
-        for i, batch_dict in enumerate(pg(loader)):
+        for i, batch_dict in enumerate(loader):
             if limit_samples and i > limit_samples:
                 break
             self.optimizer.zero_grad()
@@ -1024,12 +1001,6 @@ def fit(model_params, ts, vs, es, **kwargs):
     model_file = get_model_file('mrc', 'pytorch', kwargs.get('basedir'))
     output = kwargs.get('output')
     txts = kwargs.get('txts')
-
-    num_loader_workers = int(kwargs.get('num_loader_workers', 0))
-    pin_memory = bool(kwargs.get('pin_memory', True))
-    ts = DataLoader(ts, num_workers=num_loader_workers, batch_size=None, pin_memory=pin_memory)
-    vs = DataLoader(vs, batch_size=None, pin_memory=pin_memory)
-    es = DataLoader(es, batch_size=None, pin_memory=pin_memory) if es is not None else None
     best_metric = 0
     if do_early_stopping:
         early_stopping_metric = kwargs.get('early_stopping_metric', 'f1')

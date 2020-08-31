@@ -71,14 +71,16 @@ class MRCExample:
                  qas_id,
                  query_item,
                  doc_tokens=None,
-                 orig_answer_text=None,
+                 answers=None,
+                 #orig_answer_text=None,
                  start_position=None,
                  end_position=None,
                  is_impossible=None):
         self.qas_id = qas_id
         self.query_item = query_item
         self.doc_tokens = doc_tokens
-        self.orig_answer_text = orig_answer_text
+        #self.orig_answer_text = orig_answer_text
+        self.answers = answers
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
@@ -98,14 +100,6 @@ class MRCExample:
 
 
 class InputFeatures:
-    """Features for a sample
-
-    Because we are using our own Transformers, we dont have to pass in the valid mask, that gets computed internally.
-
-    :param start_pos: start position is a list of symbol
-    :param end_pos: end position is a list of symbol
-
-    """
 
     def __init__(self,
                  unique_id,
@@ -205,45 +199,51 @@ def read_examples(input_file, is_training):
                     query_item = qa["question"]
                     start_position = None
                     end_position = None
-                    orig_answer_text = None
+                    #orig_answer_text = None
                     is_impossible = False
                     if is_training:
 
                         is_impossible = bool(qa.get('is_impossible', False))
                         # The dev set has more than one example possibly
-                        s = set([json.dumps(q) for q in qa["answers"]])
                         # The BERT code raises an error, which makes sense when eval is offline
-                        ## if (len(s) != 1) and (not is_impossible):
-                        ##    logger.warning('Multiple answers [%s]', ','.join(q['text'] for q in qa['answers']))
                         if not is_impossible:
-                            first_answer = qa['answers'][0]
-                            # For training we have a single answer, for dev the scoring takes into  account all answers
-                            # so in order to do this the way we want with inline eval we need to handle this, right now
-                            # our scores are too low because we only use the first
-                            orig_answer_text = first_answer['text']
-                            first_answer_offset = first_answer['answer_start']
-                            answer_length = len(orig_answer_text)
-                            start_position = char_to_word_offset[first_answer_offset]
-                            end_position = char_to_word_offset[first_answer_offset + answer_length - 1]
-                            actual_text = ' '.join(
-                                doc_tokens[start_position:(end_position + 1)]
+                            all_answers = []
+                            skip_example = False
+                            for ai, answer in enumerate(qa['answers']):
+                                # For training we have a single answer, for dev the scoring takes into  account all answers
+                                # so in order to do this the way we want with inline eval we need to handle this, right now
+                                # our scores are too low because we only use the first
+                                if ai == 0:
 
-                            )
-                            cleaned_answer_text = ' '.join(whitespace_tokenize(orig_answer_text))
+                                    orig_answer_text = answer['text']
+                                    answer_offset = answer['answer_start']
+                                    answer_length = len(orig_answer_text)
+                                    start_position = char_to_word_offset[answer_offset]
+                                    end_position = char_to_word_offset[answer_offset + answer_length - 1]
+                                    actual_text = ' '.join(
+                                        doc_tokens[start_position:(end_position + 1)]
 
-                            if actual_text.find(cleaned_answer_text) == -1:
-                                logger.warning("Could not find answer: '%s' vs. '%s'", actual_text, cleaned_answer_text)
+                                    )
+                                    cleaned_answer_text = ' '.join(whitespace_tokenize(orig_answer_text))
+
+                                    if actual_text.find(cleaned_answer_text) == -1:
+                                        logger.warning("Could not find answer: '%s' vs. '%s'", actual_text, cleaned_answer_text)
+                                        skip_example = True
+                                        break
+                                if answer['text'] not in all_answers:
+                                    all_answers.append(answer['text'])
+                            if skip_example:
                                 continue
                         # This should only happen outside of mead-train for offline evaluation
                         else:
                             start_position = -1
                             end_position = -1
-                            orig_answer_text = ''
+                            all_answers = []
 
                     example = MRCExample(qas_id,
                                          query_item,
                                          doc_tokens,
-                                         orig_answer_text,
+                                         all_answers,
                                          start_position,
                                          end_position,
                                          is_impossible)
@@ -263,7 +263,11 @@ class MRCDatasetIterator(IterableDataset):
         self.mxqlen = mxqlen
         self.has_impossible = has_impossible
         self.is_training = is_training
+
         self.examples = read_examples(input_file, is_training)
+        # Add a tokenized version to all examples
+        for example in self.examples:
+            example.answers = [' '.join(self.tokenize(a)) for a in example.answers]
         self.shuffle = shuffle
 
     def _improve_answer_span(self, doc_tokens, input_start, input_end, orig_answer_text):
@@ -290,7 +294,10 @@ class MRCDatasetIterator(IterableDataset):
         # the word "Japanese". Since our WordPiece tokenizer does not split
         # "Japanese", we just use "Japanese" as the annotation. This is fairly rare
         # in SQuAD, but does happen.
-        tok_answer_text = " ".join(list(self.vectorizer.iterable(whitespace_tokenize(orig_answer_text))))
+
+        # TODO: For right now we dont need this because we will always be tokenizing our orig_answer_text
+        ##tok_answer_text = " ".join(self.tokenize(orig_answer_text))
+        tok_answer_text = orig_answer_text
 
         for new_start in range(input_start, input_end + 1):
             for new_end in range(input_end, new_start - 1, -1):
@@ -364,7 +371,7 @@ class MRCDatasetIterator(IterableDataset):
                     tok_end_position = len(all_doc_tokens) - 1
                 (tok_start_position, tok_end_position) = self._improve_answer_span(
                     all_doc_tokens, tok_start_position, tok_end_position,
-                    example.orig_answer_text)
+                    example.answers[0])
 
             # The -3 accounts for [CLS], [SEP] and [SEP]
             max_tokens_for_doc = self.mxlen - len(query_tokens) - 3
@@ -449,7 +456,6 @@ class MRCDatasetIterator(IterableDataset):
 
                 # Because we will form this on an epoch, the id of the feature according its epoch ordering is
                 # sufficient as a unique id.
-                assert(unique_id != None)
                 feature = InputFeatures(
                     unique_id=unique_id,
                     example_index=example_index,
@@ -482,6 +488,10 @@ class Batcher(IterableDataset):
 
     def __len__(self):
         return len(self.dataset)//self.batchsz
+
+    @property
+    def examples(self):
+        return self.dataset.examples
 
     def _batch(self, batch_list):
         example_index = torch.tensor([f.example_index for f in batch_list])
@@ -578,6 +588,10 @@ class SQuADJsonReader:
 def normalize_answer(s: str) -> str:
     """Lower text and remove punctuation, articles and extra whitespace."""
 
+    def clean_answer(answer):
+        # De-tokenize WordPieces that have been split off. #TODO: Add support for BPE
+        return answer.replace(" ##", "").replace("##", "")
+
     def remove_articles(text):
         regex = re.compile(r'\b(a|an|the)\b', re.UNICODE)
         return re.sub(regex, ' ', text)
@@ -586,6 +600,7 @@ def normalize_answer(s: str) -> str:
         exclude = set(string.punctuation)
         return ''.join(ch for ch in text if ch not in exclude)
 
+    s = clean_answer(s)
     return ' '.join((remove_articles(remove_punc(s.lower()))).split())
 
 
@@ -614,6 +629,21 @@ def compute_f1(a_gold, a_pred):
     recall = 1.0 * num_same / len(gold_toks)
     f1 = (2 * precision * recall) / (precision + recall)
     return precision, recall, f1
+
+
+def compute_metrics(real_answers, pred_answer):
+    exact_match = max([compute_exact(real_answer, pred_answer) for real_answer in real_answers])
+    nearest_answer = real_answers[0]
+    p_max, r_max, f1_max = compute_f1(real_answers[0], pred_answer)
+
+    for real_answer in real_answers[1:]:
+        p, r, f1 = compute_f1(real_answer, pred_answer)
+        if f1 > f1_max:
+            f1_max = f1
+            p_max = p
+            r_max = r
+            nearest_answer = real_answer
+    return exact_match, p_max, r_max, f1_max, nearest_answer
 
 
 @register_trainer(task='mrc', name='default')
@@ -689,11 +719,10 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         """
         seen_answers = set()
         nbest = []
-        gold_text = None
         for prediction in prelim_predictions:
             feature = features_for_example[prediction['feature_index']]
-            gold_start = feature['gold_start']
-            gold_end = feature['gold_end']
+            # gold_start = feature['gold_start']
+            # gold_end = feature['gold_end']
             # A couple of possibilities
             # The gold text might not be reachable in the answer, in which case the sample
             # will be showing the zero sample
@@ -702,18 +731,6 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             # We dont want to find out that the answer changed though, that should be an error
 
             # If the its pointing at token 0, thats not an answer, since that contains a special token
-            if gold_start == 0 and gold_end == 0:
-                check_gold = []
-            else:
-                check_gold = feature['tokens'][gold_start:gold_end+1]
-
-            # If gold is already set and check gold is not empty, and they dont match, we have a problem
-            if gold_text and check_gold and gold_text != check_gold:
-                raise Exception(f"The answer changed from [{gold_text}] to [{check_gold}]")
-
-            # Only set gold if we didnt have it before
-            if not gold_text:
-                gold_text = check_gold
 
             # This test makes sure that we have hit the limit of nbest and that there are at least 2 types of answers
             # Usually this is '' and some other answer
@@ -738,7 +755,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         #if len(seen_answers) < 2 and '' in seen_answers:
         #    raise Exception("We dont have any non-null guesses!")
 
-        return nbest, gold_text
+        return nbest
 
     def create_prelim_predictions(self, features_for_example, limit_nbest, limit_answer_length):
         prelim_predictions = []
@@ -768,13 +785,13 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                     if length > limit_answer_length:
                         continue
                     #if start_index not in feature['token_to_orig_map']:
-                    #    #logger.warning("Start is not in orig mapping")
+                    #    logger.warning("Start is not in orig mapping")
                     #    continue
                     #if end_index not in feature['token_to_orig_map']:
-                    #    #logger.warning("End is not in orig mapping")
+                    #    logger.warning("End is not in orig mapping")
                     #    continue
                     #if not feature['token_is_max_context'].get(start_index, False):
-                    #    #logger.warning("Toke isnt max context. Skipping")
+                    #    logger.warning("Token isnt max context. Skipping")
                     #    continue
                     prelim_predictions.append({
                         'feature_index': fi,
@@ -796,6 +813,7 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             reverse=True)
         return prelim_predictions, null_start, null_end, min_null_feature_index, score_null
 
+
     def _test(self, loader, **kwargs):
 
         self.model.eval()
@@ -811,15 +829,15 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         example_index_to_features, total_loss, total_norm = self.eval_model(loader)
         # For each example, we need to go through and update info
 
-
         all_ids = list(example_index_to_features.keys())
         example_index_to_predictions = {}
         # we are going to go over all the examples, convert them to predictions
         # convert those predictions to nbests
         for i, id in enumerate(all_ids):
+
             features_for_example = example_index_to_features[id]
             prelim_predictions, null_start, null_end, min_null_feature_index, score_null = self.create_prelim_predictions(features_for_example, limit_nbest, limit_answer_length)
-            nbest, gold_text = self.convert_prelim_preds_to_nbest(prelim_predictions, features_for_example, null_start, null_end, limit_nbest)
+            nbest = self.convert_prelim_preds_to_nbest(prelim_predictions, features_for_example, null_start, null_end, limit_nbest)
 
             # This is the BERT routine for figuring out the null values, if you have a different model this might change
             total_scores = []
@@ -853,11 +871,13 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
                 else:
                     pred_answer = ' '.join(best_non_null_entry['predict_text'])
 
-                real_answer = ' '.join(gold_text)
-
-                exact_match = compute_exact(real_answer, pred_answer)
-                exact_matches[null_score_diff_thresh].update(exact_match)
-                precision, recall, f1 = compute_f1(real_answer, pred_answer)
+                # We can look up the original item to find the gold answers
+                example = loader.dataset.examples[id]
+                real_answers = example.answers
+                if example.is_impossible:
+                    real_answers = ['']
+                exact_match, precision, recall, f1, nearest_answer = compute_metrics(real_answers, pred_answer)
+                exact_matches[null_score_diff_thresh].update(float(exact_match))
                 precisions[null_score_diff_thresh].update(precision)
                 recalls[null_score_diff_thresh].update(recall)
                 f1s[null_score_diff_thresh].update(f1)
@@ -876,7 +896,6 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
         metrics['f1'] = max(m.avg for m in f1s.values())
         metrics['exact_match'] = max(m.avg for m in exact_matches.values())
 
-        #metrics['exact_match'] = exact_matches.avg
         return metrics
 
     def eval_model(self, loader):
@@ -1011,7 +1030,6 @@ def fit(model_params, ts, vs, es, **kwargs):
     ts = DataLoader(ts, num_workers=num_loader_workers, batch_size=None, pin_memory=pin_memory)
     vs = DataLoader(vs, batch_size=None, pin_memory=pin_memory)
     es = DataLoader(es, batch_size=None, pin_memory=pin_memory) if es is not None else None
-
     best_metric = 0
     if do_early_stopping:
         early_stopping_metric = kwargs.get('early_stopping_metric', 'f1')
@@ -1151,24 +1169,6 @@ class StartAndEndLoss(nn.Module):
         return total_loss
 
 
-# TODO: currently unused
-class StartAndEndPlusImpossible(nn.Module):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.weight_start = kwargs.get('weight_start', 1/3.)
-        self.weight_end = kwargs.get('weight_end', 1/3.)
-        self.weight_impossible = kwargs.get('impossible', 1/3.)
-        self.loss_fct = nn.CrossEntropyLoss()
-        self.impossible_loss_fct = nn.BCEWithLogitsLoss()
-
-    def forward(self, start_logits, end_logits, truth_start, truth_end, impossible_guess, truth_impossible):
-        start_loss = self.loss_fct(start_logits, truth_start)
-        end_loss = self.loss_fct(end_logits, truth_end)
-        impossible_loss = self.impossible_loss_fct(impossible_guess, truth_impossible)
-        total_loss = self.weight_start * start_loss + self.weight_end * end_loss + self.weight_impossible * impossible_loss
-        return total_loss
-
-
 @register_model('mrc', 'default')
 class BertQueryMRC(nn.Module):
     def __init__(self, **kwargs):
@@ -1185,7 +1185,6 @@ class BertQueryMRC(nn.Module):
             current_hsz = self.embeddings.get_dsz()
             last_hsz = hidden_dims[-1]
             self.proj = nn.Sequential([WithDropout(Dense(current_hsz, hsz, activation='relu'), dropout) for hsz in hidden_dims])
-
 
         self.start_end_outputs = nn.Linear(last_hsz, 2)
 

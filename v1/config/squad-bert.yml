@@ -1,0 +1,42 @@
+task: mrc
+#modules: mrc_utils
+batchsz: 10
+basedir: ./squad-bert
+unif: 0.25
+
+preproc: 
+  mxlen: 384
+
+backend: pytorch
+dataset: squad-v2
+loader: 
+  reader_type: default
+
+model: 
+  model_type: default
+  dropout: 0.1
+  finetune: true
+ 
+features:
+ - name: word
+   vectorizer:
+     label: bert-base-uncased-no-extra-dict1d
+   embeddings:
+     type: tlm-words-embed
+     word_embed_type: learned-positional-w-bias
+     label: bert-base-uncased-npz
+     reduction: sum-layer-norm
+     layer_norms_after: true
+     finetune: true
+     mlm: true
+
+train:
+  limit_samples: 100000000
+  nsteps: 100
+  epochs: 3
+  optim: adamw
+  eta: 3.0e-5
+  weight_decay: 1.0e-5
+  early_stopping_metric: f1
+
+

@@ -24,7 +24,7 @@ import re
 import os
 from eight_mile.pytorch.optz import OptimizerManager
 from baseline.train import register_training_func, register_trainer, EpochReportingTrainer, create_trainer
-from baseline.vectorizers import convert_tokens_to_ids
+
 from baseline.model import create_model_for
 from typing import List
 
@@ -37,6 +37,16 @@ logger = logging.getLogger('baseline')
 
 # Use for GPT2, RoBERTa, Longformer
 BPE_PATTERN = regex.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+def convert_tokens_to_ids_if(vocab, items):
+    """Converts a sequence of [tokens|ids] using the vocab."""
+    output = []
+    for item in items:
+        id = vocab.get(item, Offsets.UNK)
+        output.append(id)
+        if id == Offsets.UNK:
+            logger.warning(f"Invalid vocab item.  Treating as UNK: [{item}]")
+    return output
 
 def bpe_tokenize(s, strip_ws=True):
     s_out = regex.findall(BPE_PATTERN, s)
@@ -363,7 +373,7 @@ class MRCDatasetIterator(IterableDataset):
         :param tokens:
         :return:
         """
-        return convert_tokens_to_ids(self.vectorizer.vocab, tokens)
+        return convert_tokens_to_ids_if(self.vectorizer.vocab, tokens)
 
     def __iter__(self):
         unique_id = 0

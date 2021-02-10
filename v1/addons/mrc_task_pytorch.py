@@ -24,7 +24,7 @@ import re
 import os
 from eight_mile.pytorch.optz import OptimizerManager
 from baseline.train import register_training_func, register_trainer, EpochReportingTrainer, create_trainer
-from baseline.vectorizers import convert_tokens_to_ids
+
 from baseline.model import create_model_for
 from typing import List
 
@@ -32,16 +32,39 @@ from mead.tasks import Task, Backend, register_task
 from mead.utils import read_config_file_or_json, index_by_label, print_dataset_info
 from eight_mile.downloads import DataDownloader
 import math
+import regex
 logger = logging.getLogger('baseline')
 
+# Use for GPT2, RoBERTa, Longformer
+BPE_PATTERN = regex.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
-def whitespace_tokenize(s):
+def convert_tokens_to_ids_if(vocab, items):
+    """Converts a sequence of [tokens|ids] using the vocab."""
+    output = []
+    for item in items:
+        id = vocab.get(item, Offsets.UNK)
+        output.append(id)
+        if id == Offsets.UNK:
+            logger.warning(f"Invalid vocab item.  Treating as UNK: [{item}]")
+    return output
+
+def bpe_tokenize(s, strip_ws=True):
+    s_out = regex.findall(BPE_PATTERN, s)
+    return s_out if not strip_ws else [w.strip() for w in s_out]
+
+def bu_tokenize(s, strip_ws=True):
+    import toky
+    s_out = [s.get_text() for s in toky.bu_assembly(s)]
+    return [s for s in s_out if s not in ['<', '>']]
+
+def whitespace_tokenize(s, strip_ws=True):
     return s.split()
 
 def is_whitespace(c):
     if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
         return True
     return False
+
 def _compute_softmax(scores):
     """Compute softmax probability over raw logits."""
     if not scores:
@@ -97,7 +120,6 @@ class MRCExample:
         if self.start_position:
             s += f"\nis_impossible: {self.is_impossible}"
         return s
-
 
 class InputFeatures:
 
@@ -180,11 +202,11 @@ def read_examples(input_file, is_training):
         pg = create_progress_bar(len(input_data))
         for entry in pg(input_data):
             for paragraph in entry['paragraphs']:
-                context_item = paragraph['context']
+                paragraph_text = paragraph['context']
                 doc_tokens = []
                 char_to_word_offset = []
                 prev_is_whitespace = True
-                for c in context_item:
+                for c in paragraph_text:
                     if is_whitespace(c):
                         prev_is_whitespace = True
                     else:
@@ -196,7 +218,7 @@ def read_examples(input_file, is_training):
                     char_to_word_offset.append(len(doc_tokens) - 1)
                 for qa in paragraph['qas']:
                     qas_id = qa["id"]
-                    query_item = qa["question"]
+                    question_text = qa["question"]
                     start_position = None
                     end_position = None
                     #orig_answer_text = None
@@ -241,7 +263,7 @@ def read_examples(input_file, is_training):
                             all_answers = []
 
                     example = MRCExample(qas_id,
-                                         query_item,
+                                         question_text,
                                          doc_tokens,
                                          all_answers,
                                          start_position,
@@ -254,9 +276,17 @@ def read_examples(input_file, is_training):
 class MRCDatasetIterator(IterableDataset):
 
     def __init__(self, input_file, vectorizer, mxlen=384, has_impossible=True, is_training=True, doc_stride=128, mxqlen=64,
-                 shuffle=True):
+                 shuffle=True, tok_type=None, strip_ws=True):
         super().__init__()
         self.vectorizer = vectorizer
+        self.CLS_TOKEN = '[CLS]'
+        if '<EOU>' in self.vectorizer.vocab:
+            self.EOU_TOKEN = '<EOU>'
+        elif '[SEP]' in self.vectorizer.vocab:
+            self.EOU_TOKEN = '[SEP]'
+        else:
+            self.EOU_TOKEN = Offsets.VALUES[Offsets.EOS]
+        print('SEP token', self.EOU_TOKEN)
         self.input_file = input_file
         self.mxlen = mxlen
         self.doc_stride = doc_stride
@@ -264,6 +294,16 @@ class MRCDatasetIterator(IterableDataset):
         self.has_impossible = has_impossible
         self.is_training = is_training
 
+        self.tokenizer_fn = whitespace_tokenize
+        if tok_type == 'pretok' or tok_type == 'bpe':
+            logger.warning("Doing GPT-style pre-tokenization. This may not be necessary for WordPiece vectorizers")
+            self.tokenizer_fn = bu_tokenize
+        elif tok_type == 'toky':
+            logger.warning("Doing toky tokenization.")
+            self.tokenizer_fn = bu_tokenize
+        self.strip_ws = strip_ws
+        if self.strip_ws:
+            logger.warning("Stripping leading whitespace on tokens.  This may not be required for GPT*, RoBERTa or variants")
         self.examples = read_examples(input_file, is_training)
         # Add a tokenized version to all examples
         for example in self.examples:
@@ -325,7 +365,7 @@ class MRCDatasetIterator(IterableDataset):
         :param text:
         :return:
         """
-        return list(self.vectorizer.iterable(whitespace_tokenize(text)))
+        return list(self.vectorizer.iterable(self.tokenizer_fn(text, self.strip_ws)))
 
     def convert_tokens_to_ids(self, tokens):
         """Encapsulate vectorizer interface
@@ -333,7 +373,7 @@ class MRCDatasetIterator(IterableDataset):
         :param tokens:
         :return:
         """
-        return convert_tokens_to_ids(self.vectorizer.vocab, tokens)
+        return convert_tokens_to_ids_if(self.vectorizer.vocab, tokens)
 
     def __iter__(self):
         unique_id = 0
@@ -400,13 +440,13 @@ class MRCDatasetIterator(IterableDataset):
                 token_is_max_context = {}
                 segment_ids = []
                 # FIXME! Dont use a literal here, read from config
-                tokens.append("[CLS]")
+                tokens.append(self.CLS_TOKEN)
                 segment_ids.append(0)
                 for token in query_tokens:
                     tokens.append(token)
                     segment_ids.append(0)
                 # FIXME! Dont use a literal here, read from config
-                tokens.append("[SEP]")
+                tokens.append(self.EOU_TOKEN)
                 segment_ids.append(0)
 
                 for i in range(doc_span.length):
@@ -418,7 +458,7 @@ class MRCDatasetIterator(IterableDataset):
                     token_is_max_context[len(tokens)] = is_max_context
                     tokens.append(all_doc_tokens[split_token_index])
                     segment_ids.append(1)
-                tokens.append("[SEP]")
+                tokens.append(self.EOU_TOKEN)
                 segment_ids.append(1)
 
                 input_ids = self.convert_tokens_to_ids(tokens)
@@ -558,11 +598,14 @@ class SQuADJsonReader:
         # Whenever we run in mead-train we want this to be on, because, unlike the BERT code, we do inline evaluation
         # and so we need ground truth
         is_training = kwargs.get('is_training', True)
+        tok_type = kwargs.get('tok_type')
+        strip_ws = kwargs.get('strip_ws', True)
 
         ds = MRCDatasetIterator(filename, self.vectorizer, mxlen=self.vectorizer.mxlen, doc_stride=doc_stride,
-                                has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen, shuffle=shuffle)
+                                has_impossible=has_impossible, is_training=is_training, mxqlen=mxqlen, shuffle=shuffle,
+                                tok_type=tok_type, strip_ws=strip_ws)
 
-        dl = DataLoader(ds, batch_size=batchsz, pin_memory=True, collate_fn=create_collate_on())
+        dl = DataLoader(ds, batch_size=batchsz, pin_memory=False, collate_fn=create_collate_on())
         return dl
         #return Batcher(loader, batchsz)
 
@@ -572,7 +615,7 @@ def normalize_answer(s: str) -> str:
 
     def clean_answer(answer):
         # De-tokenize WordPieces that have been split off. #TODO: Add support for BPE
-        return answer.replace(" ##", "").replace("##", "")
+        return answer.replace(" ##", "").replace("##", "").replace('@@ ', '')
 
     def remove_articles(text):
         regex = re.compile(r'\b(a|an|the)\b', re.UNICODE)
@@ -795,6 +838,94 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             reverse=True)
         return prelim_predictions, null_start, null_end, min_null_feature_index, score_null
 
+    def get_final_text(self, vectorizer, pred_text, orig_text):
+        """Project the tokenized prediction back to the original text."""
+
+        # When we created the data, we kept track of the alignment between original
+        # (whitespace tokenized) tokens and our WordPiece tokenized tokens. So
+        # now `orig_text` contains the span of our original text corresponding to the
+        # span that we predicted.
+        #
+        # However, `orig_text` may contain extra characters that we don't want in
+        # our prediction.
+        #
+        # For example, let's say:
+        #   pred_text = steve smith
+        #   orig_text = Steve Smith's
+        #
+        # We don't want to return `orig_text` because it contains the extra "'s".
+        #
+        # We don't want to return `pred_text` because it's already been normalized
+        # (the SQuAD eval script also does punctuation stripping/lower casing but
+        # our tokenizer does additional normalization like stripping accent
+        # characters).
+        #
+        # What we really want to return is "Steve Smith".
+        #
+        # Therefore, we have to apply a semi-complicated alignment heruistic between
+        # `pred_text` and `orig_text` to get a character-to-charcter alignment. This
+        # can fail in certain cases in which case we just return `orig_text`.
+
+        def _strip_spaces(text):
+            ns_chars = []
+            ns_to_s_map = collections.OrderedDict()
+            for (i, c) in enumerate(text):
+                if c == " ":
+                    continue
+                ns_to_s_map[len(ns_chars)] = i
+                ns_chars.append(c)
+            ns_text = "".join(ns_chars)
+            return (ns_text, ns_to_s_map)
+
+        # We first tokenize `orig_text`, strip whitespace from the result
+        # and `pred_text`, and check if they are the same length. If they are
+        # NOT the same length, the heuristic has failed. If they are the same
+        # length, we assume the characters are one-to-one aligned.
+
+        tok_text = " ".join(vectorizer.iterable(orig_text.split()))
+
+        start_position = tok_text.find(pred_text)
+        if start_position == -1:
+            logger.warning(
+                "Unable to find text: '%s' in '%s'" % (pred_text, orig_text))
+        return orig_text
+
+        (orig_ns_text, orig_ns_to_s_map) = _strip_spaces(orig_text)
+        (tok_ns_text, tok_ns_to_s_map) = _strip_spaces(tok_text)
+
+        if len(orig_ns_text) != len(tok_ns_text):
+            logger.warning("Length not equal after stripping spaces: '%s' vs '%s'",
+                           orig_ns_text, tok_ns_text)
+        return orig_text
+
+        # We then project the characters in `pred_text` back to `orig_text` using
+        # the character-to-character alignment.
+        tok_s_to_ns_map = {}
+        for (i, tok_index) in six.iteritems(tok_ns_to_s_map):
+            tok_s_to_ns_map[tok_index] = i
+
+        orig_start_position = None
+        if start_position in tok_s_to_ns_map:
+            ns_start_position = tok_s_to_ns_map[start_position]
+            if ns_start_position in orig_ns_to_s_map:
+                orig_start_position = orig_ns_to_s_map[ns_start_position]
+
+        if orig_start_position is None:
+            logger.warning("Couldn't map start position")
+        return orig_text
+
+        orig_end_position = None
+        if end_position in tok_s_to_ns_map:
+            ns_end_position = tok_s_to_ns_map[end_position]
+            if ns_end_position in orig_ns_to_s_map:
+                orig_end_position = orig_ns_to_s_map[ns_end_position]
+
+        if orig_end_position is None:
+            logger.warning("Couldn't map end position")
+        return orig_text
+
+        output_text = orig_text[orig_start_position:(orig_end_position + 1)]
+        return output_text
 
     def _test(self, loader, **kwargs):
 
@@ -944,9 +1075,10 @@ class MRCTrainerPyTorch(EpochReportingTrainer):
             example = self._make_input(batch_dict)
             y_start_pos = example.pop('start_pos')
             y_end_pos = example.pop('end_pos')
+            batchsz = self._get_batchsz(example)
+            #print(y_start_pos, y_end_pos)
             start_pos_pred, end_pos_pred = self.model(example)
             loss = self.crit(start_pos_pred, end_pos_pred, y_start_pos, y_end_pos)
-            batchsz = self._get_batchsz(example)
             report_loss = loss.item() * batchsz
             epoch_loss += report_loss
             epoch_div += batchsz
@@ -1112,11 +1244,13 @@ class MRCTask(Task):
             bsz,
             shuffle=True,
             sort_key=sort_key,
+            **read,
         )
         self.valid_data = self.reader.load(
             self.dataset['valid_file'],
             self.feat2index,
             vbsz,
+            **read
         )
         self.test_data = None
         if 'test_file' in self.dataset:
@@ -1124,6 +1258,7 @@ class MRCTask(Task):
                 self.dataset['test_file'],
                 self.feat2index,
                 tbsz,
+                **read
             )
 
 class StartAndEndLoss(nn.Module):

@@ -94,9 +94,11 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
 
     def __init__(self, **kwargs):
         super().__init__()
+        reduction_type = kwargs.get('reduction_type', '2HA')
         self.d_model = int(kwargs.get('dsz', kwargs.get('d_model', 768)))
-        self.encoder = Wav2Vec2PooledEncoder(d_model=self.d_model)
-        self.finetune = kwargs.get('finetune', False)
+        self.encoder = Wav2Vec2PooledEncoder(d_model=self.d_model, reduction_type=reduction_type)
+        self.unfreeze_after = int(kwargs.get('unfreeze_after', 50_000))
+        self.steps = 0
 
     def get_vsz(self):
         return 0
@@ -112,7 +114,11 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
         return self.d_model
 
     def forward(self, x, pad_mask=None):
+        if self.encoder.freeze and self.steps > self.unfreeze_after:
+            print('Unfreezing encoder')
+            self.encoder.freeze = False
         z = self.encoder((x, pad_mask))
+        self.steps += 1
         return z
 
     @classmethod
@@ -121,6 +127,7 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
         mapping = torch.load(embeddings)
         print(c.encoder.load_state_dict(mapping, strict=False))
         return c
+
 
 @register_embeddings(name='wav2vec2-pooled')
 class Wav2Vec2PooledEmbeddingsModel(PyTorchEmbeddingsModel, Wav2Vec2PooledEmbeddings):

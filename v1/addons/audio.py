@@ -16,6 +16,13 @@ import csv
 
 
 class CSVDictReader(SeqLabelReader):
+
+    def get_label(self, entry):
+        pass
+
+    def get_label_index(self, entry):
+        return self.label2index[self.get_label(entry)]
+
     def __init__(self, vectorizers, trim=False, truncate=False, **kwargs):
         super().__init__()
         self.datasets = {}
@@ -38,7 +45,7 @@ class CSVDictReader(SeqLabelReader):
             d = csv.DictReader(csvfile)
             for entry in d:
                 dataset.append(entry)
-                labels.add(entry['action'])
+                labels.add(self.get_label(entry))
         self.datasets[filename] = dataset
         self.labels = list(labels)
         self.label2index = {l: i for i, l in enumerate(self.labels)}
@@ -54,6 +61,10 @@ class CSVDictReader(SeqLabelReader):
 @register_reader(task='classify', name='fluent')
 class FluentDataReader(CSVDictReader):
 
+    def get_label(self, entry):
+        label = '_'.join([entry['action'], entry['object'], entry['location']])
+        return label
+
     def process_sample(self, file):
         """Read in a line and turn it into an entry.  FIXME, get from anywhere
 
@@ -68,17 +79,15 @@ class FluentDataReader(CSVDictReader):
 
     def collate(self, batch_list):
         audio = [self.process_sample(os.path.join(self.dataset_dir, '..', f['path'])) for f in batch_list]
-        audio_lengths = torch.tensor([len(x) for x in audio]).int()
-
+        audio_lengths = torch.IntTensor([len(x) for x in audio])
         mxlen = audio_lengths.max()
         audio_padded = np.zeros((len(audio), mxlen), dtype=np.float32)
 
         for b in range(len(audio)):
             audio_padded[b, :len(audio[b])] = audio[b]
 
-        actions = torch.tensor([self.label2index[f['action']] for f in batch_list])
+        actions = torch.tensor([self.get_label_index(f) for f in batch_list])
         return {'audio': (torch.from_numpy(audio_padded), sequence_mask_mxlen(audio_lengths, mxlen),), 'y': actions}
-
 
 
 class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):

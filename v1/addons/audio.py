@@ -5,7 +5,7 @@ from eight_mile.pytorch.layers import sequence_mask_mxlen
 from baseline.reader import register_reader, SeqLabelReader
 import torch
 from torch.utils.data import DataLoader
-from audio8.wav2vec2 import Wav2Vec2Encoder, Wav2Vec2PooledEncoder
+from audio8.wav2vec2 import Wav2Vec2Encoder, Wav2Vec2PooledEncoder, Wav2Vec2MaxPooledEncoder
 import numpy as np
 import os
 from eight_mile.pytorch.layers import EmbeddingsStack
@@ -94,9 +94,12 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
 
     def __init__(self, **kwargs):
         super().__init__()
-        reduction_type = kwargs.get('reduction_type', '2HA')
+        reduction_type = kwargs.get('reduction_type', 'max')
         self.d_model = int(kwargs.get('dsz', kwargs.get('d_model', 768)))
-        self.encoder = Wav2Vec2PooledEncoder(d_model=self.d_model, reduction_type=reduction_type)
+        if reduction_type == 'max':
+            self.encoder = Wav2Vec2MaxPooledEncoder(d_model=self.d_model)
+        else:
+            self.encoder = Wav2Vec2PooledEncoder(d_model=self.d_model, reduction_type=reduction_type)
         self.unfreeze_after = int(kwargs.get('unfreeze_after', 50_000))
         self.steps = 0
 

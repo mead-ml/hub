@@ -55,7 +55,8 @@ class CSVDictReader(SeqLabelReader):
 
     def load(self, filename, vocabs, batchsz, **kwargs):
         self.read_csv(filename)
-        return DataLoader(self.datasets[filename], batch_size=batchsz, collate_fn=self.collate)
+        shuffle = kwargs.get('shuffle', False)
+        return DataLoader(self.datasets[filename], batch_size=batchsz, collate_fn=self.collate, shuffle=shuffle)
 
 
 @register_reader(task='classify', name='fluent')

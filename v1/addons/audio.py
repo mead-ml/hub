@@ -94,7 +94,7 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
 
     def __init__(self, **kwargs):
         super().__init__()
-        reduction_type = kwargs.get('reduction_type', '2HA')
+        reduction_type = kwargs.get('reduction_type', 'max')
         self.d_model = int(kwargs.get('dsz', kwargs.get('d_model', 768)))
         if reduction_type == 'max':
             self.encoder = Wav2Vec2MaxPooledEncoder(d_model=self.d_model)

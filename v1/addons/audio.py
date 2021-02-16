@@ -3,6 +3,7 @@ from baseline.pytorch.embeddings import PyTorchEmbeddingsModel
 from eight_mile.pytorch.embeddings import PyTorchEmbeddings
 from eight_mile.pytorch.layers import sequence_mask_mxlen
 from baseline.reader import register_reader, SeqLabelReader
+import regex
 import torch
 from torch.utils.data import DataLoader
 from audio8.wav2vec2 import Wav2Vec2Encoder, Wav2Vec2PooledEncoder
@@ -14,6 +15,11 @@ import time
 import soundfile as sf
 import csv
 
+BPE_PATTERN = regex.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+def bpe_tokenize(s, strip_ws=True):
+    s_out = regex.findall(BPE_PATTERN, s)
+    return s_out if not strip_ws else [w.strip() for w in s_out]
 
 class CSVDictReader(SeqLabelReader):
 
@@ -89,6 +95,42 @@ class FluentDataReader(CSVDictReader):
 
         actions = torch.tensor([self.get_label_index(f) for f in batch_list])
         return {'audio': (torch.from_numpy(audio_padded), sequence_mask_mxlen(audio_lengths, mxlen),),
+                'transcript': transcripts,
+                'y': actions}
+
+
+
+@register_reader(task='classify', name='fluent-text')
+class FluentTextDataReader(CSVDictReader):
+
+    def __init__(self, vectorizers=None, trim=False, truncate=False, **kwargs):
+        super().__init__(vectorizers, trim, truncate, **kwargs)
+        self.vectorizers = vectorizers
+
+    def get_label(self, entry):
+        label = '_'.join([entry['action'], entry['object'], entry['location']])
+        return label
+
+    def collate(self, batch_list):
+        transcripts = [f['transcription'] for f in batch_list]
+        texts = []
+        key = list(self.vectorizers.keys())[0]
+        vec = self.vectorizers[key]
+        text_lengths = []
+        for t in transcripts:
+            t = bpe_tokenize(t)
+            tok, tok_len = vec.run(t, vec.vocab)
+            texts.append(tok)
+            text_lengths.append(tok_len)
+
+        text_lengths = torch.IntTensor(text_lengths)
+        mxlen = text_lengths.max()
+        texts_padded = np.stack(texts)
+        texts_padded = texts_padded[:, :mxlen]
+        
+        actions = torch.tensor([self.get_label_index(f) for f in batch_list])
+        return {key: torch.from_numpy(texts_padded),
+                f'{key}_lengths': text_lengths,
                 'transcript': transcripts,
                 'y': actions}
 

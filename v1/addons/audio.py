@@ -23,7 +23,7 @@ class CSVDictReader(SeqLabelReader):
     def get_label_index(self, entry):
         return self.label2index[self.get_label(entry)]
 
-    def __init__(self, vectorizers, trim=False, truncate=False, **kwargs):
+    def __init__(self, vectorizers=None, trim=False, truncate=False, **kwargs):
         super().__init__()
         self.datasets = {}
         self.labels = []
@@ -53,9 +53,8 @@ class CSVDictReader(SeqLabelReader):
     def collate(self, batch_list):
         pass
 
-    def load(self, filename, vocabs, batchsz, **kwargs):
+    def load(self, filename, vocabs={}, batchsz=32, shuffle=False, **kwargs):
         self.read_csv(filename)
-        shuffle = kwargs.get('shuffle', False)
         return DataLoader(self.datasets[filename], batch_size=batchsz, collate_fn=self.collate, shuffle=shuffle)
 
 
@@ -80,6 +79,7 @@ class FluentDataReader(CSVDictReader):
 
     def collate(self, batch_list):
         audio = [self.process_sample(os.path.join(self.dataset_dir, '..', f['path'])) for f in batch_list]
+        transcripts = [f['transcription'] for f in batch_list]
         audio_lengths = torch.IntTensor([len(x) for x in audio])
         mxlen = audio_lengths.max()
         audio_padded = np.zeros((len(audio), mxlen), dtype=np.float32)
@@ -88,7 +88,9 @@ class FluentDataReader(CSVDictReader):
             audio_padded[b, :len(audio[b])] = audio[b]
 
         actions = torch.tensor([self.get_label_index(f) for f in batch_list])
-        return {'audio': (torch.from_numpy(audio_padded), sequence_mask_mxlen(audio_lengths, mxlen),), 'y': actions}
+        return {'audio': (torch.from_numpy(audio_padded), sequence_mask_mxlen(audio_lengths, mxlen),),
+                'transcript': transcripts,
+                'y': actions}
 
 
 class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):

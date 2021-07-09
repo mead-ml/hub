@@ -19,8 +19,12 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
         reduction_type = kwargs.get('reduction_type', 'max')
         sample_rate = kwargs.get('sample_rate', 8)
         self.d_model = int(kwargs.get('dsz', kwargs.get('d_model', 768)))
-        self.encoder = Wav2Vec2PooledEncoder(conv_features=CONV_FEATURES[sample_rate], d_model=self.d_model, reduction_type=reduction_type)
-        self.unfreeze_after = int(kwargs.get('unfreeze_after', 50_000))
+        self.num_layers = int(kwargs.get('num_layers', 12))
+        self.encoder = Wav2Vec2PooledEncoder(conv_features=CONV_FEATURES[sample_rate], 
+                                             d_model=self.d_model,
+                                             num_layers=self.num_layers,
+                                             reduction_type=reduction_type)
+        self.unfreeze_after = int(kwargs.get('unfreeze_after', 2_000))
         self.steps = 0
 
     def get_vsz(self):

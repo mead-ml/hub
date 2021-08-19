@@ -13,16 +13,10 @@ This repository supports several types of MEAD-specific models including:
 
 ## Using and Referencing Hub from MEAD
 
-Here is an example call to `mead-train` to fine-tune BERT for classification on SST2 using the HuggingFace libraries:
+The hub embeddings can be referenced by passing them as the embedding argument to `mead-train`: `--embeddings hub:v1:embeddings`.  The vectorizers can be similarly passed with `--vecs hub:v1:vecs`.
 
-```
-mead-train --embeddings hub:v1:embeddings --config config/sst2-bert-hf-base-uncased.json --vecs hub:v1:vecs
-```
+The optional index arguments `--embeddings` and `--vecs` have been supplied here as shortname references to mead-hub.  This causes `mead-train` to download these indices and allows us to reference the labels from those indices (which are usually referencs to hub addons).
 
-The optional index arguments `--embeddings` and `--vecs` have been supplied here as shortname references to mead-hub.  This causes `mead-train` to download these indices and allows us to reference the labels from those indices (which are usually referencs to hub addons).  You can see the configuration file here: 
-
-https://github.com/dpressel/mead-baseline/blob/master/mead/config/sst2-bert-hf-base-uncased.json
-
-The SST2 dataset is defined in the default datasets index (note that we didnt override that), but notice that the embeddings label (`bert-base-uncased-pooled-pytorch`) and the vectorizer label (`bert-base-uncased`) reference items in the mead hub embeddings and vecs indices.  That's it!  The hub indices are downloaded, and when referenced in the MEAD config, the appropriate addons are automatically downloaded to the mead-baseline cache!
+The hub indices are downloaded, and when referenced in the MEAD config, the appropriate addons are automatically downloaded to the mead-baseline cache!
 
 

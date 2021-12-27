@@ -18,12 +18,17 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
         super().__init__()
         reduction_type = kwargs.get('reduction_type', 'max')
         sample_rate = kwargs.get('sample_rate', 8)
-        self.d_model = int(kwargs.get('dsz', kwargs.get('d_model', 768)))
+        d_model = kwargs.get('d_model', 768)
+        self.d_model = kwargs.get('dsz', d_model)
+        final_output_dim = self.d_model if self.d_model != d_model else None
+
+        self.final_output_dim = kwargs.get('dsz', self.d_model)
         self.num_layers = int(kwargs.get('num_layers', 12))
         self.encoder = Wav2Vec2PooledEncoder(conv_features=CONV_FEATURES[sample_rate], 
-                                             d_model=self.d_model,
+                                             d_model=d_model,
                                              num_layers=self.num_layers,
-                                             reduction_type=reduction_type)
+                                             reduction_type=reduction_type,
+                                             final_output_dim=final_output_dim)
         self.unfreeze_after = int(kwargs.get('unfreeze_after', 2_000))
         self.steps = 0
 
@@ -44,6 +49,8 @@ class Wav2Vec2PooledEmbeddings(PyTorchEmbeddings):
         if self.encoder.freeze and self.steps > self.unfreeze_after:
             print('Unfreezing encoder')
             self.encoder.freeze = False
+        if pad_mask is None:
+            pad_mask = torch.ones_like(x, dtype=torch.bool)
         z = self.encoder((x, pad_mask))
         self.steps += 1
         return z

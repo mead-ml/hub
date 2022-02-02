@@ -64,16 +64,18 @@ class HFTransformersEmbeddings(HFTransformersEmbeddings):
         If operator == 'concat' result is [B, T, #Layers * H] other size the layers are mean'd the shape is [B, T, H]
         """
         super().__init__(name=name, **kwargs)
-        self.layer_indices = kwargs.get('layers', [-1])
+        self.layer_indices = kwargs.get('layers', [])
         self.operator = kwargs.get('operator', 'concat')
         self.finetune = kwargs.get('trainable', kwargs.get('finetune', False))
 
     def get_output(self, input_ids, output):
+        if not self.layer_indices:
+            z = output.last_hidden_state.detach() if not self.finetune else output.last_hidden_state
+            return z
         all_layers = output[-1]
-        if self.finetune:
-            layers = [all_layers[layer_index] for layer_index in self.layer_indices]
-        else:
-            layers = [all_layers[layer_index].detach() for layer_index in self.layer_indices]
+        layers = [all_layers[layer_index] for layer_index in self.layer_indices]
+        if not self.finetune:
+            layers = [l.detach() for l in layers]
         if self.operator != 'concat':
             z = torch.cat([l.unsqueeze(-1) for l in layers], dim=-1)
             z = torch.mean(z, dim=-1)
